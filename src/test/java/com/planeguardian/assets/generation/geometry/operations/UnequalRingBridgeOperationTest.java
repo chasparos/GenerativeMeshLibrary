@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -43,7 +44,7 @@ class UnequalRingBridgeOperationTest {
                 builder, sixteen, eight, StandardLoopTransition.EIGHT_TO_SIXTEEN, Set.of());
         var mesh = builder.snapshot();
 
-        assertTrue(!result.increasing());
+        assertFalse(result.increasing());
         assertEquals(8, result.regularFaces().size());
         assertEquals(4, result.wedgeFaces().size());
         assertEquals(12, mesh.faces().size());

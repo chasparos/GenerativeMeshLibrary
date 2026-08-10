@@ -160,7 +160,10 @@ public final class ProtoMeshBuilder {
         frozenEdges.values().forEach(edge -> {
             Vector3 positionA = vertices.get(edge.vertexA()).position();
             Vector3 positionB = vertices.get(edge.vertexB()).position();
-            if (positionA.equals(positionB)) {
+            double dx = positionA.x() - positionB.x();
+            double dy = positionA.y() - positionB.y();
+            double dz = positionA.z() - positionB.z();
+            if ((dx * dx) + (dy * dy) + (dz * dz) <= AREA_EPSILON_SQUARED) {
                 issues.add(new TopologyIssue(TopologyIssue.Severity.ERROR, "zero-length-edge", "Edge " + edge.id().value() + " has coincident endpoints"));
             }
             if (!edge.isManifold()) {
