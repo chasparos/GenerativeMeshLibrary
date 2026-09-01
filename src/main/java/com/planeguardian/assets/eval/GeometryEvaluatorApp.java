@@ -52,7 +52,10 @@ import java.util.List;
  * library. Displays a {@link SUTGeometryInterface} implementation (a
  * {@link TubeGeometry} by default) with an orbit camera, a shaded/wireframe
  * toggle, three-point lighting, a red-clay PBR ground plane at {@code y=0},
- * an "edge mesh" overlay toggle, face/edge selection, and camera framing.
+ * an "edge mesh" overlay toggle, face/edge selection with highlighting, a
+ * per-corner normals overlay toggle, a front/back orientation display mode
+ * (yellow front-facing / blue back-facing, the classic normal-check
+ * convention), and camera framing.
  */
 public final class GeometryEvaluatorApp extends SimpleApplication implements ActionListener {
 
@@ -67,14 +70,22 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
     private Geometry solidGeometry;
     private Geometry edgeOverlayGeometry;
     private Geometry highlightGeometry;
+    private Geometry normalOverlayGeometry;
+    private Geometry frontFacingGeometry;
+    private Geometry backFacingGeometry;
 
     private Material solidMaterial;
     private Material edgeOverlayMaterial;
     private Material faceHighlightMaterial;
     private Material edgeHighlightMaterial;
+    private Material normalOverlayMaterial;
+    private Material frontFacingMaterial;
+    private Material backFacingMaterial;
 
     private boolean wireframe;
     private boolean edgeOverlayVisible = true;
+    private boolean normalOverlayVisible = false;
+    private boolean frontBackModeEnabled = false;
     private SelectMode selectMode = SelectMode.FACE;
 
     private ProtoMeshSnapshot currentSnapshot;
@@ -208,6 +219,42 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
         edgeHighlightMaterial.getAdditionalRenderState().setDepthTest(false);
         edgeHighlightMaterial.getAdditionalRenderState().setLineWidth(4f);
 
+        com.jme3.bounding.BoundingVolume localBound = triangleResult.mesh().getBound();
+        float normalLength = 0.25f;
+        if (localBound instanceof com.jme3.bounding.BoundingBox box) {
+            normalLength = StrictMath.max(0.02f,
+                    (box.getXExtent() + box.getYExtent() + box.getZExtent()) / 3f * 0.3f);
+        }
+        normalOverlayMaterial = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+        normalOverlayMaterial.setColor("Color", new ColorRGBA(0.2f, 1f, 0.35f, 1f));
+        normalOverlayGeometry = new Geometry("sut-normals",
+                JmeMeshAdapter.toNormalOverlayMesh(triangulated, normalLength));
+        normalOverlayGeometry.setMaterial(normalOverlayMaterial);
+        normalOverlayGeometry.setCullHint(normalOverlayVisible ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        meshNode.attachChild(normalOverlayGeometry);
+
+        // Front/back orientation display: two passes over the same mesh, one showing
+        // only front-facing triangles (culled back faces) in yellow, the other showing
+        // only back-facing triangles (culled front faces) in blue - the classic
+        // "normal check" convention for spotting inverted winding.
+        frontFacingMaterial = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+        frontFacingMaterial.setColor("Color", ColorRGBA.Yellow);
+        frontFacingMaterial.getAdditionalRenderState().setFaceCullMode(RenderState.FaceCullMode.Back);
+        frontFacingGeometry = new Geometry("sut-front-facing", triangleResult.mesh());
+        frontFacingGeometry.setMaterial(frontFacingMaterial);
+        frontFacingGeometry.setCullHint(frontBackModeEnabled ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        meshNode.attachChild(frontFacingGeometry);
+
+        backFacingMaterial = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+        backFacingMaterial.setColor("Color", ColorRGBA.Blue);
+        backFacingMaterial.getAdditionalRenderState().setFaceCullMode(RenderState.FaceCullMode.Front);
+        backFacingGeometry = new Geometry("sut-back-facing", triangleResult.mesh());
+        backFacingGeometry.setMaterial(backFacingMaterial);
+        backFacingGeometry.setCullHint(frontBackModeEnabled ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        meshNode.attachChild(backFacingGeometry);
+
+        solidGeometry.setCullHint(frontBackModeEnabled ? Spatial.CullHint.Always : Spatial.CullHint.Inherit);
+
         updateHighlight();
     }
 
@@ -216,6 +263,8 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
     private void setUpInput() {
         addMapping("ToggleShaded", new KeyTrigger(com.jme3.input.KeyInput.KEY_1));
         addMapping("ToggleEdgeMesh", new KeyTrigger(com.jme3.input.KeyInput.KEY_2));
+        addMapping("ToggleNormals", new KeyTrigger(com.jme3.input.KeyInput.KEY_3));
+        addMapping("ToggleFrontBack", new KeyTrigger(com.jme3.input.KeyInput.KEY_4));
         addMapping("ToggleSelectMode", new KeyTrigger(com.jme3.input.KeyInput.KEY_TAB));
         addMapping("FrameSelection", new KeyTrigger(com.jme3.input.KeyInput.KEY_F));
         addMapping("FrameAll", new KeyTrigger(com.jme3.input.KeyInput.KEY_HOME));
@@ -232,6 +281,8 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
         switch (name) {
             case "ToggleShaded" -> { if (isPressed) toggleWireframe(); }
             case "ToggleEdgeMesh" -> { if (isPressed) toggleEdgeOverlay(); }
+            case "ToggleNormals" -> { if (isPressed) toggleNormalOverlay(); }
+            case "ToggleFrontBack" -> { if (isPressed) toggleFrontBackMode(); }
             case "ToggleSelectMode" -> { if (isPressed) toggleSelectMode(); }
             case "FrameSelection" -> { if (isPressed) frameSelectionOrAll(); }
             case "FrameAll" -> { if (isPressed) frameAll(); }
@@ -264,6 +315,21 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
     private void toggleEdgeOverlay() {
         edgeOverlayVisible = !edgeOverlayVisible;
         edgeOverlayGeometry.setCullHint(edgeOverlayVisible ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        updateHud();
+    }
+
+    private void toggleNormalOverlay() {
+        normalOverlayVisible = !normalOverlayVisible;
+        normalOverlayGeometry.setCullHint(normalOverlayVisible ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        updateHud();
+    }
+
+    /** Toggles the front/back (yellow/blue) orientation display mode, replacing the shaded solid mesh. */
+    private void toggleFrontBackMode() {
+        frontBackModeEnabled = !frontBackModeEnabled;
+        solidGeometry.setCullHint(frontBackModeEnabled ? Spatial.CullHint.Always : Spatial.CullHint.Inherit);
+        frontFacingGeometry.setCullHint(frontBackModeEnabled ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        backFacingGeometry.setCullHint(frontBackModeEnabled ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
         updateHud();
     }
 
@@ -461,6 +527,8 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
                 "Drag mouse (L/R) to orbit, scroll to zoom",
                 "[1] Shaded/Wireframe: " + (wireframe ? "Wireframe" : "Shaded"),
                 "[2] Edge mesh overlay: " + (edgeOverlayVisible ? "On" : "Off"),
+                "[3] Normals overlay: " + (normalOverlayVisible ? "On" : "Off"),
+                "[4] Front/back display (yellow/blue): " + (frontBackModeEnabled ? "On" : "Off"),
                 "[Tab] Select mode: " + selectMode,
                 "[Click] Select " + (selectMode == SelectMode.FACE ? "face" : "edge"),
                 "[F] Frame selection  [Home] Frame all",
