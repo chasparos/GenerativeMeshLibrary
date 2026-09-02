@@ -59,14 +59,29 @@ public final class TopologicalSkeleton {
     private final Map<String, GuideCurve> curvesById;
     private final boolean isMirrored;
     private final Plane symmetryPlane;
+    private final Set<String> holeCurveIds;
 
     public TopologicalSkeleton(Map<String, Pole> poles, List<GuideCurve> curves, boolean isMirrored, Plane symmetryPlane) {
+        this(poles, curves, isMirrored, symmetryPlane, Set.of());
+    }
+
+    /**
+     * @param holeCurveIds ids of {@link GuideCurve}s that bound an intentional open boundary
+     *        (for example an eye socket or mouth opening): any traced {@link SubPatch} whose
+     *        every side is one of these curves is left unfilled by {@link TopologyGenerator}
+     *        rather than quadrangulated, representing a hole in the generated mesh.
+     */
+    public TopologicalSkeleton(
+            Map<String, Pole> poles, List<GuideCurve> curves, boolean isMirrored, Plane symmetryPlane,
+            Set<String> holeCurveIds) {
         Objects.requireNonNull(poles, "poles");
         Objects.requireNonNull(curves, "curves");
+        Objects.requireNonNull(holeCurveIds, "holeCurveIds");
         this.poles = Map.copyOf(poles);
         this.curves = List.copyOf(curves);
         this.isMirrored = isMirrored;
         this.symmetryPlane = symmetryPlane;
+        this.holeCurveIds = Set.copyOf(holeCurveIds);
 
         Map<String, GuideCurve> byId = new TreeMap<>();
         for (GuideCurve curve : this.curves) {
@@ -75,8 +90,23 @@ public final class TopologicalSkeleton {
             }
         }
         this.curvesById = Map.copyOf(byId);
+        for (String holeCurveId : this.holeCurveIds) {
+            if (!this.curvesById.containsKey(holeCurveId)) {
+                throw new IllegalArgumentException("holeCurveIds references unknown guide curve: " + holeCurveId);
+            }
+        }
 
         validate();
+    }
+
+    /** Ids of the guide curves marked as bounding an open-boundary hole (see the constructor Javadoc). */
+    public Set<String> holeCurveIds() {
+        return holeCurveIds;
+    }
+
+    /** Whether every side of {@code patch} is one of {@link #holeCurveIds()}, so it should be left unfilled. */
+    public boolean isHolePatch(SubPatch patch) {
+        return !holeCurveIds.isEmpty() && patch.sides().stream().allMatch(side -> holeCurveIds.contains(side.curveId()));
     }
 
     public Map<String, Pole> poles() {
@@ -120,7 +150,7 @@ public final class TopologicalSkeleton {
             }
         }
         if (!replaced) throw new IllegalArgumentException("Cannot replace unknown curve: " + replacement.id());
-        return new TopologicalSkeleton(poles, updated, isMirrored, symmetryPlane);
+        return new TopologicalSkeleton(poles, updated, isMirrored, symmetryPlane, holeCurveIds);
     }
 
     /** The curves incident to {@code poleId}, in authored order. */
@@ -205,7 +235,12 @@ public final class TopologicalSkeleton {
                 }
             } else {
                 int degree = graphDegree(pole.id());
-                if (degree != pole.requestedValence()) {
+                // A zero-degree interior pole is a deliberate "phantom" fan-center: it is not
+                // referenced by any GuideCurve and instead exists purely to supply a position and
+                // requestedValence for TopologyGenerator's single-center-pole fan fill of an
+                // n-sided (n != 4) sub-patch (see TopologyGenerator#fillPoleFanPatch), so its
+                // valence cannot be checked against a (nonexistent) curve graph degree.
+                if (degree != 0 && degree != pole.requestedValence()) {
                     throw new TopologyParityException(
                             "Interior pole " + pole.id() + " requests valence " + pole.requestedValence()
                                     + " but has " + degree + " incident curves; requestedValence must equal graph degree"

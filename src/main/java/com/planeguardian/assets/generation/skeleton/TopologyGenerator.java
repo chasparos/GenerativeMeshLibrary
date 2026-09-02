@@ -156,6 +156,12 @@ public final class TopologyGenerator {
                 // and filling it here would create a degenerate, zero-thickness double face.
                 continue;
             }
+            if (skeleton.isHolePatch(patch)) {
+                // Every side is an authored open-boundary curve (see TopologicalSkeleton#holeCurveIds()),
+                // so this patch is an intentional opening (for example an eye socket or mouth) and is
+                // left unfilled rather than quadrangulated.
+                continue;
+            }
             fillPatch(builder, skeleton, patch, poleVertices, curveVertices, claimedPoleIds);
         }
         return new HalfMesh(builder, Map.copyOf(poleVertices), patches);
