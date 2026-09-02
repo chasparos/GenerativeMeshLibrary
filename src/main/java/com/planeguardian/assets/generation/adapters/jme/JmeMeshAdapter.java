@@ -212,6 +212,41 @@ public final class JmeMeshAdapter {
     }
 
     /**
+     * Builds a {@code Mesh.Mode.Lines} mesh from an arbitrary set of polylines (e.g. sampled
+     * {@link com.planeguardian.assets.generation.skeleton.GuideCurve} paths), for a viewer
+     * overlay distinct from the generated mesh's own edges. Each polyline is emitted as a
+     * disconnected strip of line segments.
+     */
+    public static Mesh toPolylineMesh(List<List<Vector3>> polylines) {
+        Objects.requireNonNull(polylines, "polylines");
+        int segmentCount = 0;
+        for (List<Vector3> polyline : polylines) {
+            segmentCount += Math.max(0, polyline.size() - 1);
+        }
+        FloatBuffer positions = BufferUtils.createFloatBuffer(segmentCount * 2 * 3);
+        int[] lineIndices = new int[segmentCount * 2];
+        int cursor = 0;
+        for (List<Vector3> polyline : polylines) {
+            for (int index = 0; index + 1 < polyline.size(); index++) {
+                Vector3f a = toVector3f(polyline.get(index));
+                Vector3f b = toVector3f(polyline.get(index + 1));
+                positions.put(a.x).put(a.y).put(a.z);
+                positions.put(b.x).put(b.y).put(b.z);
+                lineIndices[cursor] = cursor;
+                lineIndices[cursor + 1] = cursor + 1;
+                cursor += 2;
+            }
+        }
+        Mesh mesh = new Mesh();
+        mesh.setMode(Mesh.Mode.Lines);
+        mesh.setBuffer(VertexBuffer.Type.Position, 3, positions);
+        mesh.setBuffer(VertexBuffer.Type.Index, 2, lineIndices);
+        mesh.updateBound();
+        mesh.updateCounts();
+        return mesh;
+    }
+
+    /**
      * Builds a {@code Mesh.Mode.Lines} normals-overlay mesh: one short segment per
      * triangle corner, from the vertex position along its (authored or flat-face)
      * normal, scaled to {@code length}. Useful to visually verify normal direction
