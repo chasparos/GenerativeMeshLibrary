@@ -30,6 +30,7 @@ import com.jme3.scene.shape.Box;
 import com.jme3.system.AppSettings;
 import com.jme3.util.BufferUtils;
 import com.planeguardian.assets.generation.adapters.jme.JmeMeshAdapter;
+import com.planeguardian.assets.generation.geometry.eval.FaceGeometry;
 import com.planeguardian.assets.generation.geometry.eval.SUTGeometryInterface;
 import com.planeguardian.assets.generation.geometry.eval.TubeGeometry;
 import com.planeguardian.assets.generation.topology.EdgeId;
@@ -50,9 +51,15 @@ import java.util.List;
 /**
  * Basic JME3 evaluation modeler used to exercise the geometry tools in this
  * library. Displays a {@link SUTGeometryInterface} implementation (a
- * {@link TubeGeometry} by default) with an orbit camera, a shaded/wireframe
- * toggle, three-point lighting, a red-clay PBR ground plane at {@code y=0},
- * an "edge mesh" overlay toggle, face/edge selection, and camera framing.
+ * {@link TubeGeometry} by default, switchable to {@link FaceGeometry}) with
+ * an orbit camera, a shaded/wireframe toggle, three-point lighting, a
+ * red-clay PBR ground plane at {@code y=0}, an "edge mesh" overlay toggle,
+ * face/edge selection with highlighting, a per-corner normals overlay
+ * toggle, a front/back orientation display mode (yellow front-facing / blue
+ * back-facing, the classic normal-check convention), a red authored-curve
+ * overlay for generators that expose their {@link
+ * com.planeguardian.assets.generation.skeleton.GuideCurve} network, and
+ * camera framing.
  */
 public final class GeometryEvaluatorApp extends SimpleApplication implements ActionListener {
 
@@ -67,14 +74,26 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
     private Geometry solidGeometry;
     private Geometry edgeOverlayGeometry;
     private Geometry highlightGeometry;
+    private Geometry normalOverlayGeometry;
+    private Geometry frontFacingGeometry;
+    private Geometry backFacingGeometry;
+    private Geometry curveOverlayGeometry;
 
     private Material solidMaterial;
     private Material edgeOverlayMaterial;
     private Material faceHighlightMaterial;
     private Material edgeHighlightMaterial;
+    private Material normalOverlayMaterial;
+    private Material frontFacingMaterial;
+    private Material backFacingMaterial;
+    private Material curveOverlayMaterial;
 
     private boolean wireframe;
     private boolean edgeOverlayVisible = true;
+    private boolean normalOverlayVisible = false;
+    private boolean frontBackModeEnabled = false;
+    private boolean curveOverlayVisible = true;
+    private SUTGeometryInterface currentGenerator;
     private SelectMode selectMode = SelectMode.FACE;
 
     private ProtoMeshSnapshot currentSnapshot;
@@ -164,6 +183,7 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
 
     /** Rebuilds the viewer's scene content from a {@link SUTGeometryInterface} generator. */
     public void loadGeometry(SUTGeometryInterface generator) {
+        currentGenerator = generator;
         currentSnapshot = generator.generate();
         if (!currentSnapshot.isValid()) {
             throw new IllegalStateException("Generator '" + generator.id() + "' produced an invalid mesh: "
@@ -208,6 +228,56 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
         edgeHighlightMaterial.getAdditionalRenderState().setDepthTest(false);
         edgeHighlightMaterial.getAdditionalRenderState().setLineWidth(4f);
 
+        com.jme3.bounding.BoundingVolume localBound = triangleResult.mesh().getBound();
+        float normalLength = 0.25f;
+        if (localBound instanceof com.jme3.bounding.BoundingBox box) {
+            normalLength = StrictMath.max(0.02f,
+                    (box.getXExtent() + box.getYExtent() + box.getZExtent()) / 3f * 0.3f);
+        }
+        normalOverlayMaterial = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+        normalOverlayMaterial.setColor("Color", new ColorRGBA(0.2f, 1f, 0.35f, 1f));
+        normalOverlayGeometry = new Geometry("sut-normals",
+                JmeMeshAdapter.toNormalOverlayMesh(triangulated, normalLength));
+        normalOverlayGeometry.setMaterial(normalOverlayMaterial);
+        normalOverlayGeometry.setCullHint(normalOverlayVisible ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        meshNode.attachChild(normalOverlayGeometry);
+
+        // Front/back orientation display: two passes over the same mesh, one showing
+        // only front-facing triangles (culled back faces) in yellow, the other showing
+        // only back-facing triangles (culled front faces) in blue - the classic
+        // "normal check" convention for spotting inverted winding.
+        frontFacingMaterial = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+        frontFacingMaterial.setColor("Color", ColorRGBA.Yellow);
+        frontFacingMaterial.getAdditionalRenderState().setFaceCullMode(RenderState.FaceCullMode.Back);
+        frontFacingGeometry = new Geometry("sut-front-facing", triangleResult.mesh());
+        frontFacingGeometry.setMaterial(frontFacingMaterial);
+        frontFacingGeometry.setCullHint(frontBackModeEnabled ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        meshNode.attachChild(frontFacingGeometry);
+
+        backFacingMaterial = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+        backFacingMaterial.setColor("Color", ColorRGBA.Blue);
+        backFacingMaterial.getAdditionalRenderState().setFaceCullMode(RenderState.FaceCullMode.Front);
+        backFacingGeometry = new Geometry("sut-back-facing", triangleResult.mesh());
+        backFacingGeometry.setMaterial(backFacingMaterial);
+        backFacingGeometry.setCullHint(frontBackModeEnabled ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        meshNode.attachChild(backFacingGeometry);
+
+        solidGeometry.setCullHint(frontBackModeEnabled ? Spatial.CullHint.Always : Spatial.CullHint.Inherit);
+
+        // Authored-curve overlay: only generators that expose their authoring curves (e.g.
+        // FaceGeometry) have anything to draw here; other generators simply show nothing.
+        curveOverlayMaterial = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+        curveOverlayMaterial.setColor("Color", ColorRGBA.Red);
+        curveOverlayMaterial.getAdditionalRenderState().setLineWidth(3f);
+        curveOverlayMaterial.getAdditionalRenderState().setDepthTest(false);
+        List<List<com.planeguardian.assets.generation.api.Vector3>> authoredCurves =
+                generator instanceof FaceGeometry face ? face.authoredCurvePolylines() : List.of();
+        curveOverlayGeometry = new Geometry("sut-authored-curves", JmeMeshAdapter.toPolylineMesh(authoredCurves));
+        curveOverlayGeometry.setMaterial(curveOverlayMaterial);
+        curveOverlayGeometry.setCullHint(
+                curveOverlayVisible && !authoredCurves.isEmpty() ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        meshNode.attachChild(curveOverlayGeometry);
+
         updateHighlight();
     }
 
@@ -216,6 +286,10 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
     private void setUpInput() {
         addMapping("ToggleShaded", new KeyTrigger(com.jme3.input.KeyInput.KEY_1));
         addMapping("ToggleEdgeMesh", new KeyTrigger(com.jme3.input.KeyInput.KEY_2));
+        addMapping("ToggleNormals", new KeyTrigger(com.jme3.input.KeyInput.KEY_3));
+        addMapping("ToggleFrontBack", new KeyTrigger(com.jme3.input.KeyInput.KEY_4));
+        addMapping("ToggleCurveOverlay", new KeyTrigger(com.jme3.input.KeyInput.KEY_5));
+        addMapping("SwitchSUT", new KeyTrigger(com.jme3.input.KeyInput.KEY_6));
         addMapping("ToggleSelectMode", new KeyTrigger(com.jme3.input.KeyInput.KEY_TAB));
         addMapping("FrameSelection", new KeyTrigger(com.jme3.input.KeyInput.KEY_F));
         addMapping("FrameAll", new KeyTrigger(com.jme3.input.KeyInput.KEY_HOME));
@@ -232,6 +306,10 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
         switch (name) {
             case "ToggleShaded" -> { if (isPressed) toggleWireframe(); }
             case "ToggleEdgeMesh" -> { if (isPressed) toggleEdgeOverlay(); }
+            case "ToggleNormals" -> { if (isPressed) toggleNormalOverlay(); }
+            case "ToggleFrontBack" -> { if (isPressed) toggleFrontBackMode(); }
+            case "ToggleCurveOverlay" -> { if (isPressed) toggleCurveOverlay(); }
+            case "SwitchSUT" -> { if (isPressed) switchSUT(); }
             case "ToggleSelectMode" -> { if (isPressed) toggleSelectMode(); }
             case "FrameSelection" -> { if (isPressed) frameSelectionOrAll(); }
             case "FrameAll" -> { if (isPressed) frameAll(); }
@@ -264,6 +342,35 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
     private void toggleEdgeOverlay() {
         edgeOverlayVisible = !edgeOverlayVisible;
         edgeOverlayGeometry.setCullHint(edgeOverlayVisible ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        updateHud();
+    }
+
+    private void toggleNormalOverlay() {
+        normalOverlayVisible = !normalOverlayVisible;
+        normalOverlayGeometry.setCullHint(normalOverlayVisible ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        updateHud();
+    }
+
+    /** Toggles the front/back (yellow/blue) orientation display mode, replacing the shaded solid mesh. */
+    private void toggleFrontBackMode() {
+        frontBackModeEnabled = !frontBackModeEnabled;
+        solidGeometry.setCullHint(frontBackModeEnabled ? Spatial.CullHint.Always : Spatial.CullHint.Inherit);
+        frontFacingGeometry.setCullHint(frontBackModeEnabled ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        backFacingGeometry.setCullHint(frontBackModeEnabled ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        updateHud();
+    }
+
+    private void toggleCurveOverlay() {
+        curveOverlayVisible = !curveOverlayVisible;
+        curveOverlayGeometry.setCullHint(curveOverlayVisible ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        updateHud();
+    }
+
+    /** Cycles between the available SUT generators (Tube, Human Face). */
+    private void switchSUT() {
+        SUTGeometryInterface next = currentGenerator instanceof FaceGeometry ? new TubeGeometry() : new FaceGeometry();
+        loadGeometry(next);
+        frameAll();
         updateHud();
     }
 
@@ -461,6 +568,10 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
                 "Drag mouse (L/R) to orbit, scroll to zoom",
                 "[1] Shaded/Wireframe: " + (wireframe ? "Wireframe" : "Shaded"),
                 "[2] Edge mesh overlay: " + (edgeOverlayVisible ? "On" : "Off"),
+                "[3] Normals overlay: " + (normalOverlayVisible ? "On" : "Off"),
+                "[4] Front/back display (yellow/blue): " + (frontBackModeEnabled ? "On" : "Off"),
+                "[5] Authored curve overlay (red): " + (curveOverlayVisible ? "On" : "Off"),
+                "[6] Switch SUT: " + (currentGenerator == null ? "-" : currentGenerator.displayName()),
                 "[Tab] Select mode: " + selectMode,
                 "[Click] Select " + (selectMode == SelectMode.FACE ? "face" : "edge"),
                 "[F] Frame selection  [Home] Frame all",
