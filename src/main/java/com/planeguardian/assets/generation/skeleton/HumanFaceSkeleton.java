@@ -54,10 +54,12 @@ public final class HumanFaceSkeleton {
         Map<String, Pole> poles = new LinkedHashMap<>();
 
         // Poles are placed roughly on the surface of a head-shaped ellipsoid (centred at
-        // (0, 0.55, 0), radii 0.12 lateral / 0.55 vertical / 0.55 front-to-back) so that the
-        // vector from the skeleton's centroid to each pole approximates its true local
-        // outward surface normal, which is what TopologicalSkeleton#tracePatches() relies on
-        // to sort each pole's curves into a correct rotation order.
+        // (0, 0.55, 0), radii 0.24 lateral / 0.55 vertical / 0.55 front-to-back -- twice as wide
+        // as the earlier, much-too-thin 0.12 lateral radius that made the mirrored mesh read as a
+        // narrow blade instead of a face) so that the vector from the skeleton's centroid to each
+        // pole approximates its true local outward surface normal, which is what
+        // TopologicalSkeleton#tracePatches() relies on to sort each pole's curves into a correct
+        // rotation order.
 
         // On-axis (symmetry-plane) poles, ordered top-to-bottom down the centreline.
         addPole(poles, "crown", 0, 1.0725, -0.055, 4, true);
@@ -68,19 +70,19 @@ public final class HumanFaceSkeleton {
         addPole(poles, "neckBase", 0, 0.0825, -0.11, 4, true);
 
         // Off-axis interior poles.
-        addPole(poles, "innerEyeNose", 0.018, 0.715, 0.495, 4, false);
-        addPole(poles, "cheek", 0.066, 0.6875, 0.4125, 6, false);
-        addPole(poles, "mouthCorner", 0.054, 0.44, 0.4675, 4, false);
+        addPole(poles, "innerEyeNose", 0.036, 0.715, 0.495, 4, false);
+        addPole(poles, "cheek", 0.132, 0.6875, 0.4125, 6, false);
+        addPole(poles, "mouthCorner", 0.108, 0.44, 0.4675, 4, false);
 
         // Phantom fan-center poles: unreferenced by any curve, existing only to anchor
         // TopologyGenerator's single-center-pole fan fill of the small triangular/pentagonal
         // patches traced above, at each patch's approximate centre and matching side count.
-        addPole(poles, "templeFan", 0.033, 0.841, 0.295, 3, false);
-        addPole(poles, "noseMouthFan", 0.026, 0.597, 0.511, 5, false);
-        addPole(poles, "jawFan", 0.033, 0.280, 0.410, 5, false);
-        addPole(poles, "backJawFan", 0.033, 0.615, 0.081, 3, false);
-        addPole(poles, "browFan", 0.042, 0.723, 0.521, 3, false);
-        addPole(poles, "maskFan", 0.052, 0.643, 0.470, 3, false);
+        addPole(poles, "templeFan", 0.066, 0.841, 0.295, 3, false);
+        addPole(poles, "noseMouthFan", 0.052, 0.597, 0.511, 5, false);
+        addPole(poles, "jawFan", 0.066, 0.280, 0.410, 5, false);
+        addPole(poles, "backJawFan", 0.066, 0.615, 0.081, 3, false);
+        addPole(poles, "browFan", 0.0252, 0.7301, 0.4980, 3, false);
+        addPole(poles, "maskFan", 0.1008, 0.5184, 0.4634, 3, false);
 
         List<GuideCurve> curves = List.of(
                 // Centreline seam curves, closing the centreline into a loop from crown to neck.
@@ -98,8 +100,8 @@ public final class HumanFaceSkeleton {
                 // loop rather than merging into a neighbouring patch.
                 curve("browRidge", "glabella", "cheek"),
                 curve("noseBridge", "glabella", "innerEyeNose"),
-                curveVia("eyeUpperLoop", "innerEyeNose", "cheek", 0.1, 0.8, 0.55),
-                curveVia("eyeUnderLoop", "innerEyeNose", "cheek", 0.042, 0.68125, 0.43375),
+                curveVia("eyeUpperLoop", "innerEyeNose", "cheek", 0.2, 0.8, 0.55),
+                curveVia("eyeUnderLoop", "innerEyeNose", "cheek", 0.084, 0.68125, 0.43375),
 
                 // Nose / cheek mask: directly links the eye-nose and mouth-corner poles so the
                 // mask region between the two hole rings stays a small, local triangle instead
@@ -114,8 +116,8 @@ public final class HumanFaceSkeleton {
                 curve("cheekToNeck", "cheek", "neckBase"),
 
                 // Mouth opening: same bulge trick as the eye ring, above/below the straight line.
-                curveVia("upperLip", "lipCenter", "mouthCorner", 0.027, 0.48375, 0.506),
-                curveVia("lowerLip", "mouthCorner", "lipCenter", 0.027, 0.42375, 0.506));
+                curveVia("upperLip", "lipCenter", "mouthCorner", 0.054, 0.48375, 0.506),
+                curveVia("lowerLip", "mouthCorner", "lipCenter", 0.054, 0.42375, 0.506));
 
         Set<String> holeCurveIds = Set.of("eyeUpperLoop", "eyeUnderLoop", "upperLip", "lowerLip");
         Plane symmetryPlane = new Plane(Vector3.ZERO, new Vector3(1, 0, 0));

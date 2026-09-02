@@ -21,6 +21,13 @@ import java.util.List;
  */
 public final class FaceGeometry implements SUTGeometryInterface {
 
+    /**
+     * Segment count used to resample every authored curve purely for the overlay display,
+     * far higher than any curve's mesh-generation {@code densitySegmentCount} so the overlay
+     * reads as a smooth spline and the generated topology underneath it is easier to make out.
+     */
+    private static final int OVERLAY_DISPLAY_SEGMENT_COUNT = 32;
+
     @Override
     public String id() {
         return "face";
@@ -50,7 +57,8 @@ public final class FaceGeometry implements SUTGeometryInterface {
         for (GuideCurve curve : skeleton.curves()) {
             Pole start = skeleton.pole(curve.startPoleId());
             Pole end = skeleton.pole(curve.endPoleId());
-            List<Vector3> samples = GuideCurveSampler.sample(curve, start.position(), end.position(), null);
+            List<Vector3> samples =
+                    GuideCurveSampler.sampleForDisplay(curve, start.position(), end.position(), null, OVERLAY_DISPLAY_SEGMENT_COUNT);
             polylines.add(samples);
             if (skeleton.isMirrored()) {
                 List<Vector3> mirrored = new ArrayList<>(samples.size());
