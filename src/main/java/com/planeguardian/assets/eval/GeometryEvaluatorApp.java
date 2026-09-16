@@ -81,7 +81,11 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
     private Geometry frontFacingGeometry;
     private Geometry backFacingGeometry;
     private Geometry curveOverlayGeometry;
-    private Node curveLabelNode;
+    private Node curveInspectorNode;
+    private List<Geometry> curveInspectorGeometries = List.of();
+    private List<FaceGeometry.NamedCurve> inspectorCurves = List.of();
+    private BitmapText selectedCurveLabel;
+    private BitmapFont curveLabelFont;
 
     private Material solidMaterial;
     private Material edgeOverlayMaterial;
@@ -107,6 +111,7 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
 
     private FaceId selectedFace;
     private EdgeId selectedEdge;
+    private int selectedCurveIndex = -1;
 
     private BitmapText hud;
     private Vector2f mouseDownPosition;
@@ -272,6 +277,9 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
 
         // Authored-curve overlay: only generators that expose their authoring curves (e.g.
         // FaceGeometry) have anything to draw here; other generators simply show nothing.
+        // This single-color, merged-mesh overlay (all curves, including any mirrored halves)
+        // is the plain "curve overlay" toggle (key 5); "face inspector" mode (key 7) instead
+        // uses the separate, per-curve inspectorCurveGeometries built below.
         curveOverlayMaterial = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
         curveOverlayMaterial.setColor("Color", ColorRGBA.Red);
         curveOverlayMaterial.getAdditionalRenderState().setLineWidth(3f);
@@ -285,27 +293,57 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
         curveOverlayGeometry.setMaterial(curveOverlayMaterial);
         meshNode.attachChild(curveOverlayGeometry);
 
-        // "Face inspector" mode labels: one BitmapText per authored curve, billboarded to face
-        // the camera and positioned at the curve's midpoint, so a curve can be identified by
-        // name while the solid/edge/normal overlays are hidden (see toggleFaceInspectorMode()).
-        curveLabelNode = new Node("sut-curve-labels");
-        BitmapFont labelFont = assetManager.loadFont("Interface/Fonts/Default.fnt");
-        for (FaceGeometry.NamedCurve namedCurve : namedCurves) {
-            BitmapText label = new BitmapText(labelFont);
-            label.setText(namedCurve.id());
-            label.setColor(ColorRGBA.Yellow);
-            com.planeguardian.assets.generation.api.Vector3 midpoint =
-                    namedCurve.polyline().get(namedCurve.polyline().size() / 2);
-            label.setLocalTranslation(JmeMeshAdapter.toVector3f(midpoint));
-            label.setLocalScale(0.01f);
-            label.addControl(new com.jme3.scene.control.BillboardControl());
-            curveLabelNode.attachChild(label);
+        // "Face inspector" mode: only the authored half of the curve network is shown (mirrored
+        // "(mirror)"-suffixed copies are dropped) so the half actually driving generation isn't
+        // doubled up across the seam. Every curve gets its own small, individually pickable
+        // Geometry in a distinct hue-rotated color (see curveColor()); no name label is drawn by
+        // default (the previous one-label-per-curve layout overwhelmed the geometry) — clicking
+        // a curve (see pickAtCursor()) shows just that curve's name (see selectedCurveLabel).
+        inspectorCurves = namedCurves.stream().filter(curve -> !curve.id().endsWith(" (mirror)")).toList();
+        selectedCurveIndex = -1;
+        curveInspectorNode = new Node("sut-curve-inspector");
+        curveInspectorGeometries = new ArrayList<>(inspectorCurves.size());
+        for (int index = 0; index < inspectorCurves.size(); index++) {
+            FaceGeometry.NamedCurve namedCurve = inspectorCurves.get(index);
+            Material material = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+            material.setColor("Color", curveColor(index, inspectorCurves.size()));
+            material.getAdditionalRenderState().setLineWidth(3f);
+            material.getAdditionalRenderState().setDepthTest(false);
+            Geometry curveGeometry = new Geometry("sut-inspector-curve-" + namedCurve.id(),
+                    JmeMeshAdapter.toPolylineMesh(List.of(namedCurve.polyline())));
+            curveGeometry.setMaterial(material);
+            curveInspectorNode.attachChild(curveGeometry);
+            curveInspectorGeometries.add(curveGeometry);
         }
-        meshNode.attachChild(curveLabelNode);
+        meshNode.attachChild(curveInspectorNode);
+
+        curveLabelFont = assetManager.loadFont("Interface/Fonts/Default.fnt");
+        selectedCurveLabel = new BitmapText(curveLabelFont);
+        selectedCurveLabel.setColor(ColorRGBA.White);
+        selectedCurveLabel.setLocalScale(0.0025f);
+        selectedCurveLabel.addControl(new com.jme3.scene.control.BillboardControl());
+        selectedCurveLabel.setCullHint(Spatial.CullHint.Always);
+        meshNode.attachChild(selectedCurveLabel);
 
         applyFaceInspectorVisibility();
 
         updateHighlight();
+    }
+
+    /**
+     * A distinct, high-contrast color for the curve at {@code index} out of {@code count}, so
+     * every curve in "face inspector" mode is visually distinguishable from its neighbors: hues
+     * are spread using the golden angle (about 137.5 degrees) rather than {@code index / count}
+     * so adjacent curve ids (which are often adjacent in space too) don't get similar hues.
+     */
+    private static ColorRGBA curveColor(int index, int count) {
+        if (count <= 0) return ColorRGBA.Red;
+        float hue = (index * 137.508f) % 360f;
+        int packed = java.awt.Color.HSBtoRGB(hue / 360f, 0.85f, 1f);
+        float red = ((packed >> 16) & 0xFF) / 255f;
+        float green = ((packed >> 8) & 0xFF) / 255f;
+        float blue = (packed & 0xFF) / 255f;
+        return new ColorRGBA(red, green, blue, 1f);
     }
 
     // ---- Input ----------------------------------------------------------
@@ -356,7 +394,11 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
         } else if (mouseDownPosition != null) {
             Vector2f released = input.getCursorPosition();
             if (mouseDownPosition.distance(released) <= CLICK_DRAG_THRESHOLD_PIXELS) {
-                pickAtCursor(released);
+                if (faceInspectorMode) {
+                    pickCurveAtCursor(released);
+                } else {
+                    pickAtCursor(released);
+                }
             }
             mouseDownPosition = null;
         }
@@ -397,12 +439,16 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
 
     /**
      * Toggles "face inspector" mode: hides the shaded solid mesh, edge overlay, normal overlay,
-     * and front/back display, leaving only the (forced-visible) red authored-curve overlay and
-     * a per-curve name label, so the guide-curve network driving generation can be read on its
-     * own without the generated mesh cluttering the view.
+     * and front/back display, leaving only the (forced-visible) per-curve colored overlay for
+     * the authored half of the face, so the guide-curve network driving generation can be read
+     * on its own without the generated mesh or its mirrored other half cluttering the view.
      */
     private void toggleFaceInspectorMode() {
         faceInspectorMode = !faceInspectorMode;
+        if (!faceInspectorMode) {
+            selectedCurveIndex = -1;
+            updateSelectedCurveLabel();
+        }
         applyFaceInspectorVisibility();
         updateHud();
     }
@@ -421,9 +467,9 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
         backFacingGeometry.setCullHint(
                 !faceInspectorMode && frontBackModeEnabled ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
         curveOverlayGeometry.setCullHint(
-                (faceInspectorMode || curveOverlayVisible) && hasAuthoredCurves
+                !faceInspectorMode && curveOverlayVisible && hasAuthoredCurves
                         ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
-        curveLabelNode.setCullHint(
+        curveInspectorNode.setCullHint(
                 faceInspectorMode && hasAuthoredCurves ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
     }
 
@@ -495,6 +541,68 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
         }
         updateHighlight();
         updateHud();
+    }
+
+    /**
+     * Picks the authored curve (in "face inspector" mode, see {@link #inspectorCurves}) whose
+     * polyline passes closest to the cursor in screen space, within {@link
+     * #CLICK_DRAG_THRESHOLD_PIXELS} scaled up for line-picking tolerance; deselects if the
+     * cursor isn't near any curve. Screen-space distance is used (rather than 3D ray collision,
+     * which JME3 doesn't support against a {@code Mesh.Mode.Lines} mesh) since every curve is a
+     * thin polyline with no meaningful surface to intersect.
+     */
+    private void pickCurveAtCursor(Vector2f screenPosition) {
+        float pickRadiusPixels = 10f;
+        int bestIndex = -1;
+        float bestDistance = pickRadiusPixels;
+        for (int index = 0; index < inspectorCurves.size(); index++) {
+            List<com.planeguardian.assets.generation.api.Vector3> polyline = inspectorCurves.get(index).polyline();
+            for (int i = 0; i < polyline.size() - 1; i++) {
+                Vector3f screenA = cam.getScreenCoordinates(JmeMeshAdapter.toVector3f(polyline.get(i)));
+                Vector3f screenB = cam.getScreenCoordinates(JmeMeshAdapter.toVector3f(polyline.get(i + 1)));
+                Vector2f a = new Vector2f(screenA.x, screenA.y);
+                Vector2f b = new Vector2f(screenB.x, screenB.y);
+                float distance = distancePointToSegment2D(screenPosition, a, b);
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    bestIndex = index;
+                }
+            }
+        }
+        selectedCurveIndex = bestIndex;
+        updateSelectedCurveLabel();
+        updateHud();
+    }
+
+    private static float distancePointToSegment2D(Vector2f point, Vector2f a, Vector2f b) {
+        Vector2f ab = b.subtract(a);
+        float lengthSquared = ab.lengthSquared();
+        float t = lengthSquared <= 1.0e-12f ? 0f : (point.subtract(a).dot(ab)) / lengthSquared;
+        t = FastMath.clamp(t, 0f, 1f);
+        Vector2f closest = a.add(ab.mult(t));
+        return point.distance(closest);
+    }
+
+    /** Shows the selected curve's name (and only its name) at its midpoint, or hides the label if none is selected. */
+    private void updateSelectedCurveLabel() {
+        for (Geometry curveGeometry : curveInspectorGeometries) {
+            curveGeometry.getMaterial().getAdditionalRenderState().setLineWidth(3f);
+        }
+        if (selectedCurveIndex >= 0 && selectedCurveIndex < curveInspectorGeometries.size()) {
+            curveInspectorGeometries.get(selectedCurveIndex)
+                    .getMaterial().getAdditionalRenderState().setLineWidth(7f);
+        }
+        if (selectedCurveLabel == null) return;
+        if (selectedCurveIndex < 0 || selectedCurveIndex >= inspectorCurves.size()) {
+            selectedCurveLabel.setCullHint(Spatial.CullHint.Always);
+            return;
+        }
+        FaceGeometry.NamedCurve namedCurve = inspectorCurves.get(selectedCurveIndex);
+        selectedCurveLabel.setText(namedCurve.id());
+        com.planeguardian.assets.generation.api.Vector3 midpoint =
+                namedCurve.polyline().get(namedCurve.polyline().size() / 2);
+        selectedCurveLabel.setLocalTranslation(JmeMeshAdapter.toVector3f(midpoint));
+        selectedCurveLabel.setCullHint(Spatial.CullHint.Inherit);
     }
 
     /** Finds the boundary edge of {@code faceId} closest to a picked point on that face. */
@@ -661,12 +769,15 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
                 "[4] Front/back display (yellow/blue): " + (frontBackModeEnabled ? "On" : "Off"),
                 "[5] Authored curve overlay (red): " + (curveOverlayVisible ? "On" : "Off"),
                 "[6] Switch SUT: " + (currentGenerator == null ? "-" : currentGenerator.displayName()),
-                "[7] Face inspector mode: " + (faceInspectorMode ? "On" : "Off"),
+                "[7] Face inspector mode: " + (faceInspectorMode ? "On" : "Off")
+                        + (faceInspectorMode ? " (click a curve to see its name)" : ""),
                 "[C] Copy geometry (OBJ) to clipboard",
                 "[Tab] Select mode: " + selectMode,
                 "[Click] Select " + (selectMode == SelectMode.FACE ? "face" : "edge"),
                 "[F] Frame selection  [Home] Frame all",
                 "Selected face: " + (selectedFace == null ? "-" : selectedFace),
-                "Selected edge: " + (selectedEdge == null ? "-" : selectedEdge))));
+                "Selected edge: " + (selectedEdge == null ? "-" : selectedEdge),
+                "Selected curve: " + (selectedCurveIndex < 0 || selectedCurveIndex >= inspectorCurves.size()
+                        ? "-" : inspectorCurves.get(selectedCurveIndex).id()))));
     }
 }
