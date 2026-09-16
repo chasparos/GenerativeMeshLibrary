@@ -150,7 +150,7 @@ public final class TopologyGenerator {
             claimedPoleIds.add(curve.endPoleId());
         }
         for (SubPatch patch : patches) {
-            if (skeleton.isMirrored() && isSeamOnlyPatch(skeleton, patch)) {
+            if (skeleton.isMirrored() && skeleton.isSeamOnlyPatch(patch)) {
                 // Every side connects two symmetry-plane poles, so this patch lies exactly on the
                 // mirror seam: it is naturally closed once the half-mesh is mirrored and welded,
                 // and filling it here would create a degenerate, zero-thickness double face.
@@ -165,11 +165,6 @@ public final class TopologyGenerator {
             fillPatch(builder, skeleton, patch, poleVertices, curveVertices, claimedPoleIds);
         }
         return new HalfMesh(builder, Map.copyOf(poleVertices), patches);
-    }
-
-    private static boolean isSeamOnlyPatch(TopologicalSkeleton skeleton, SubPatch patch) {
-        return patch.sides().stream().allMatch(side ->
-                skeleton.pole(side.fromPoleId()).isOnSymmetryPlane() && skeleton.pole(side.toPoleId()).isOnSymmetryPlane());
     }
 
     private static List<VertexId> sideVertices(SubPatch.Side side, Map<String, List<VertexId>> curveVertices) {
@@ -397,9 +392,20 @@ public final class TopologyGenerator {
         }
         for (List<VertexId> group : buckets.values()) {
             if (group.size() < 2) continue;
-            VertexId retained = group.get(0);
-            for (int index = 1; index < group.size(); index++) {
-                VertexId retired = group.get(index);
+            // A curve lying entirely between symmetry-seam poles whose only adjacent sub-patches
+            // are both left unfilled (a seam-only patch and/or a hole) has an interior sample
+            // vertex that no face ever references on either half. Such an orphan has nothing to
+            // weld onto (or be welded from): drop it, and only weld the group's remaining,
+            // genuinely face-referenced duplicates onto each other as before.
+            List<VertexId> unused = group.stream().filter(id -> !isVertexUsed(combined, id)).toList();
+            for (VertexId orphan : unused) {
+                combined.removeVertex(orphan);
+            }
+            List<VertexId> used = group.stream().filter(id -> !unused.contains(id)).toList();
+            if (used.size() < 2) continue;
+            VertexId retained = used.get(0);
+            for (int index = 1; index < used.size(); index++) {
+                VertexId retired = used.get(index);
                 VertexWeldOperation.weldCoincident(combined, retained, retired, WELD_TOLERANCE_METRES);
                 canonical.put(retired, retained);
                 for (Map.Entry<VertexId, VertexId> entry : canonical.entrySet()) {
@@ -407,6 +413,11 @@ public final class TopologyGenerator {
                 }
             }
         }
+    }
+
+    /** Whether any face loop currently references {@code vertexId}. */
+    private static boolean isVertexUsed(ProtoMeshBuilder builder, VertexId vertexId) {
+        return builder.snapshot().loops().values().stream().anyMatch(loop -> loop.vertexId().equals(vertexId));
     }
 
     private void verifySymmetryPlaneValences(

@@ -15,17 +15,18 @@ class HumanFaceSkeletonTest {
         TopologicalSkeleton skeleton = HumanFaceSkeleton.build();
 
         assertTrue(skeleton.isMirrored());
-        assertEquals(4, skeleton.holeCurveIds().size(),
-                "the eye ring and mouth ring are each authored as a two-curve hole bigon");
+        assertEquals(8, skeleton.holeCurveIds().size(),
+                "the eye ring (2 curves), mouth opening (3 curves), and back-of-head gap (3 curves) are holes");
     }
 
     @Test
-    void eyeAndMouthOpeningsTraceAsIsolatedHolePatches() {
+    void eyeMouthAndBackOfHeadOpeningsTraceAsIsolatedHolePatches() {
         TopologicalSkeleton skeleton = HumanFaceSkeleton.build();
 
         long holePatchCount = skeleton.tracePatches().stream().filter(skeleton::isHolePatch).count();
 
-        assertEquals(2, holePatchCount, "expected exactly one hole patch each for the eye ring and mouth ring");
+        assertEquals(3, holePatchCount,
+                "expected exactly one hole patch each for the eye ring, mouth opening, and back-of-head gap");
     }
 
     @Test

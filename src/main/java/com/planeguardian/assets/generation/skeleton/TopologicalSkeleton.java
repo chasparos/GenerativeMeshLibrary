@@ -31,7 +31,12 @@ import java.util.TreeMap;
  *       {@code seamCurveCount + 2 * freeCurveCount} (see {@link BoundaryConstraint}
  *       for the derivation: seam curves — to another symmetry-plane pole — map
  *       to themselves under reflection and are not duplicated; free curves —
- *       to an interior pole — gain a genuinely distinct mirrored counterpart).</li>
+ *       to an interior pole — gain a genuinely distinct mirrored counterpart).
+ *       Curves that {@link TopologyGenerator} will never fill on either traced
+ *       side — for example a seam curve spanning the gap of a hole that itself
+ *       touches the symmetry plane on both ends, such as a single mouth
+ *       opening's center seam — produce no mesh edge at all and are excluded
+ *       from both counts (see {@link #seamCurveCount} / {@link #freeCurveCount}).</li>
  * </ul>
  *
  * <h2>Sub-patch tracing</h2>
@@ -109,6 +114,42 @@ public final class TopologicalSkeleton {
         return !holeCurveIds.isEmpty() && patch.sides().stream().allMatch(side -> holeCurveIds.contains(side.curveId()));
     }
 
+    /**
+     * Whether every side of {@code patch} connects two symmetry-plane poles, meaning the patch
+     * lies exactly on the mirror seam and is naturally closed (zero thickness) once the half-mesh
+     * is mirrored and welded, rather than needing to be quadrangulated.
+     */
+    public boolean isSeamOnlyPatch(SubPatch patch) {
+        return patch.sides().stream().allMatch(side -> pole(side.fromPoleId()).isOnSymmetryPlane() && pole(side.toPoleId()).isOnSymmetryPlane());
+    }
+
+    /**
+     * Ids of curves that {@link TopologyGenerator} will never fill on either side, and so
+     * contribute no edges (and no mid-curve vertex) to the final mesh at all: both of the curve's
+     * two traced sub-patches (see {@link #tracePatches()}) are either an authored hole
+     * ({@link #isHolePatch}) or lie entirely on the mirror seam ({@link #isSeamOnlyPatch}). A
+     * curve directly joining two symmetry-plane poles across an open-boundary gap (for example a
+     * seam curve spanning the gap of a hole that itself touches the symmetry plane on both sides,
+     * such as a single mouth opening's center seam) is the main case: it is a hole curve on one
+     * side, and the mirror seam's own always-unfilled patch on the other.
+     */
+    private Set<String> unfillableCurveIds() {
+        Map<String, List<SubPatch>> patchesByCurve = new LinkedHashMap<>();
+        for (SubPatch patch : tracePatches()) {
+            for (SubPatch.Side side : patch.sides()) {
+                patchesByCurve.computeIfAbsent(side.curveId(), ignored -> new ArrayList<>()).add(patch);
+            }
+        }
+        Set<String> unfillable = new LinkedHashSet<>();
+        for (Map.Entry<String, List<SubPatch>> entry : patchesByCurve.entrySet()) {
+            boolean allUnfilled = entry.getValue().stream().allMatch(patch -> isHolePatch(patch) || isSeamOnlyPatch(patch));
+            if (allUnfilled) {
+                unfillable.add(entry.getKey());
+            }
+        }
+        return unfillable;
+    }
+
     public Map<String, Pole> poles() {
         return poles;
     }
@@ -170,10 +211,16 @@ public final class TopologicalSkeleton {
         return incidentCurves(poleId).size();
     }
 
-    /** Among a symmetry-plane pole's incident curves, how many also terminate at another symmetry-plane pole. */
+    /**
+     * Among a symmetry-plane pole's incident curves, how many also terminate at another
+     * symmetry-plane pole and are not {@link #unfillableCurveIds() unfillable} (both traced
+     * sides authored-hole or seam-only, so the curve produces no mesh edge at all).
+     */
     public int seamCurveCount(String poleId) {
+        Set<String> unfillable = unfillableCurveIds();
         int count = 0;
         for (GuideCurve curve : incidentCurves(poleId)) {
+            if (unfillable.contains(curve.id())) continue;
             String otherId = otherEndpoint(curve, poleId);
             if (poles.get(otherId).isOnSymmetryPlane()) {
                 count++;
@@ -182,9 +229,21 @@ public final class TopologicalSkeleton {
         return count;
     }
 
-    /** Among a symmetry-plane pole's incident curves, how many terminate at an interior (non-symmetry) pole. */
+    /**
+     * Among a symmetry-plane pole's incident curves, how many terminate at an interior
+     * (non-symmetry) pole and are not {@link #unfillableCurveIds() unfillable}.
+     */
     public int freeCurveCount(String poleId) {
-        return graphDegree(poleId) - seamCurveCount(poleId);
+        Set<String> unfillable = unfillableCurveIds();
+        int count = 0;
+        for (GuideCurve curve : incidentCurves(poleId)) {
+            if (unfillable.contains(curve.id())) continue;
+            String otherId = otherEndpoint(curve, poleId);
+            if (!poles.get(otherId).isOnSymmetryPlane()) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private static String otherEndpoint(GuideCurve curve, String poleId) {
