@@ -103,9 +103,9 @@ public final class HumanFaceSkeleton {
         // Note there is no fan pole for the region behind the cheek (bounded by cheekToCrown,
         // backOfHead, cheekToNeck): that patch is deliberately left as a hole (see class Javadoc)
         // rather than filled, so it needs no phantom center.
-        addPole(poles, "templeFan", 0.0598, 0.9961, 0.1545, 3, false);
-        addPole(poles, "browFan", 0.0743, 0.7161, 0.3954, 3, false);
-        addPole(poles, "maskFan", 0.2677, 0.5168, 0.3345, 3, false);
+        addPole(poles, "templeFan", 0.1187, 0.8499, 0.2436, 3, false);
+        addPole(poles, "browFan", 0.1115, 0.7040, 0.3790, 3, false);
+        addPole(poles, "maskFan", 0.2697, 0.5409, 0.3292, 3, false);
         addPole(poles, "noseMouthFan", 0.0924, 0.5982, 0.4099, 5, false);
         addPole(poles, "jawFan", 0.1245, 0.3522, 0.3301, 5, false);
 
