@@ -86,12 +86,16 @@ public final class HumanFaceSkeleton {
 
         List<GuideCurve> curves = List.of(
                 // Centreline seam curves, closing the centreline into a loop from crown to neck.
-                curve("forehead", "crown", "glabella"),
-                curve("noseDorsum", "glabella", "philtrum"),
-                curve("upperLipSeam", "philtrum", "lipCenter"),
-                curve("lowerLipSeam", "lipCenter", "mentalCleft"),
-                curve("throat", "mentalCleft", "neckBase"),
-                curve("backOfHead", "neckBase", "crown"),
+                // Each is given a bulge control point pulled from the straight chord midpoint
+                // out toward the head ellipsoid's surface (radii 0.24/0.55/0.55 as noted above),
+                // so the surface between distant poles follows the rounded skull/jaw profile
+                // instead of a flat, faceted chord between them.
+                curveVia("forehead", "crown", "glabella", 0.0, 0.9649, 0.2681),
+                curveVia("noseDorsum", "glabella", "philtrum", 0.0, 0.6334, 0.5365),
+                curveVia("upperLipSeam", "philtrum", "lipCenter", 0.0, 0.4949, 0.5455),
+                curveVia("lowerLipSeam", "lipCenter", "mentalCleft", 0.0, 0.3558, 0.5050),
+                curveVia("throat", "mentalCleft", "neckBase", 0.0, 0.1009, 0.2021),
+                curveVia("backOfHead", "neckBase", "crown", 0.0, 0.6580, -0.3241),
 
                 // Forehead / eye region. The eye ring's two curves are given distinct bulges
                 // (control points off the straight line) so they are genuinely distinguishable
@@ -106,14 +110,14 @@ public final class HumanFaceSkeleton {
                 // Nose / cheek mask: directly links the eye-nose and mouth-corner poles so the
                 // mask region between the two hole rings stays a small, local triangle instead
                 // of wrapping around the whole lower face.
-                curve("maskLink", "innerEyeNose", "mouthCorner"),
-                curve("cheekToMouth", "cheek", "mouthCorner"),
+                curveVia("maskLink", "innerEyeNose", "mouthCorner", 0.0743, 0.5784, 0.4966),
+                curveVia("cheekToMouth", "cheek", "mouthCorner", 0.1232, 0.5641, 0.4518),
 
                 // Outer (temple/jaw) silhouette: closes the cheek pole back onto the centreline
                 // chain directly, avoiding a separate jaw pole and the large irregular region
                 // that produced when the outer boundary looped all the way around the head.
-                curve("cheekToCrown", "cheek", "crown"),
-                curve("cheekToNeck", "cheek", "neckBase"),
+                curveVia("cheekToCrown", "cheek", "crown", 0.0708, 0.9037, 0.1916),
+                curveVia("cheekToNeck", "cheek", "neckBase", 0.1002, 0.2995, 0.2296),
 
                 // Mouth opening: same bulge trick as the eye ring, above/below the straight line.
                 curveVia("upperLip", "lipCenter", "mouthCorner", 0.054, 0.48375, 0.506),

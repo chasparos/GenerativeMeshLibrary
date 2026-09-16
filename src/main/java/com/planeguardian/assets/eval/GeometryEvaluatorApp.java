@@ -45,8 +45,11 @@ import com.planeguardian.assets.generation.topology.VertexId;
 import com.planeguardian.assets.generation.triangulation.ProtoMeshTriangulator;
 import com.planeguardian.assets.generation.triangulation.TriangulatedMesh;
 
+import java.awt.Toolkit;
+import java.awt.datatransfer.StringSelection;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Basic JME3 evaluation modeler used to exercise the geometry tools in this
@@ -78,6 +81,7 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
     private Geometry frontFacingGeometry;
     private Geometry backFacingGeometry;
     private Geometry curveOverlayGeometry;
+    private Node curveLabelNode;
 
     private Material solidMaterial;
     private Material edgeOverlayMaterial;
@@ -93,6 +97,8 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
     private boolean normalOverlayVisible = false;
     private boolean frontBackModeEnabled = false;
     private boolean curveOverlayVisible = true;
+    private boolean faceInspectorMode = false;
+    private boolean hasAuthoredCurves = false;
     private SUTGeometryInterface currentGenerator;
     private SelectMode selectMode = SelectMode.FACE;
 
@@ -270,13 +276,34 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
         curveOverlayMaterial.setColor("Color", ColorRGBA.Red);
         curveOverlayMaterial.getAdditionalRenderState().setLineWidth(3f);
         curveOverlayMaterial.getAdditionalRenderState().setDepthTest(false);
+        List<FaceGeometry.NamedCurve> namedCurves =
+                generator instanceof FaceGeometry face ? face.authoredNamedCurves() : List.of();
+        hasAuthoredCurves = !namedCurves.isEmpty();
         List<List<com.planeguardian.assets.generation.api.Vector3>> authoredCurves =
-                generator instanceof FaceGeometry face ? face.authoredCurvePolylines() : List.of();
+                namedCurves.stream().map(FaceGeometry.NamedCurve::polyline).toList();
         curveOverlayGeometry = new Geometry("sut-authored-curves", JmeMeshAdapter.toPolylineMesh(authoredCurves));
         curveOverlayGeometry.setMaterial(curveOverlayMaterial);
-        curveOverlayGeometry.setCullHint(
-                curveOverlayVisible && !authoredCurves.isEmpty() ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
         meshNode.attachChild(curveOverlayGeometry);
+
+        // "Face inspector" mode labels: one BitmapText per authored curve, billboarded to face
+        // the camera and positioned at the curve's midpoint, so a curve can be identified by
+        // name while the solid/edge/normal overlays are hidden (see toggleFaceInspectorMode()).
+        curveLabelNode = new Node("sut-curve-labels");
+        BitmapFont labelFont = assetManager.loadFont("Interface/Fonts/Default.fnt");
+        for (FaceGeometry.NamedCurve namedCurve : namedCurves) {
+            BitmapText label = new BitmapText(labelFont);
+            label.setText(namedCurve.id());
+            label.setColor(ColorRGBA.Yellow);
+            com.planeguardian.assets.generation.api.Vector3 midpoint =
+                    namedCurve.polyline().get(namedCurve.polyline().size() / 2);
+            label.setLocalTranslation(JmeMeshAdapter.toVector3f(midpoint));
+            label.setLocalScale(0.01f);
+            label.addControl(new com.jme3.scene.control.BillboardControl());
+            curveLabelNode.attachChild(label);
+        }
+        meshNode.attachChild(curveLabelNode);
+
+        applyFaceInspectorVisibility();
 
         updateHighlight();
     }
@@ -290,6 +317,8 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
         addMapping("ToggleFrontBack", new KeyTrigger(com.jme3.input.KeyInput.KEY_4));
         addMapping("ToggleCurveOverlay", new KeyTrigger(com.jme3.input.KeyInput.KEY_5));
         addMapping("SwitchSUT", new KeyTrigger(com.jme3.input.KeyInput.KEY_6));
+        addMapping("ToggleFaceInspector", new KeyTrigger(com.jme3.input.KeyInput.KEY_7));
+        addMapping("CopyToClipboard", new KeyTrigger(com.jme3.input.KeyInput.KEY_C));
         addMapping("ToggleSelectMode", new KeyTrigger(com.jme3.input.KeyInput.KEY_TAB));
         addMapping("FrameSelection", new KeyTrigger(com.jme3.input.KeyInput.KEY_F));
         addMapping("FrameAll", new KeyTrigger(com.jme3.input.KeyInput.KEY_HOME));
@@ -310,6 +339,8 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
             case "ToggleFrontBack" -> { if (isPressed) toggleFrontBackMode(); }
             case "ToggleCurveOverlay" -> { if (isPressed) toggleCurveOverlay(); }
             case "SwitchSUT" -> { if (isPressed) switchSUT(); }
+            case "ToggleFaceInspector" -> { if (isPressed) toggleFaceInspectorMode(); }
+            case "CopyToClipboard" -> { if (isPressed) copyGeometryToClipboard(); }
             case "ToggleSelectMode" -> { if (isPressed) toggleSelectMode(); }
             case "FrameSelection" -> { if (isPressed) frameSelectionOrAll(); }
             case "FrameAll" -> { if (isPressed) frameAll(); }
@@ -341,29 +372,87 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
 
     private void toggleEdgeOverlay() {
         edgeOverlayVisible = !edgeOverlayVisible;
-        edgeOverlayGeometry.setCullHint(edgeOverlayVisible ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        applyFaceInspectorVisibility();
         updateHud();
     }
 
     private void toggleNormalOverlay() {
         normalOverlayVisible = !normalOverlayVisible;
-        normalOverlayGeometry.setCullHint(normalOverlayVisible ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        applyFaceInspectorVisibility();
         updateHud();
     }
 
     /** Toggles the front/back (yellow/blue) orientation display mode, replacing the shaded solid mesh. */
     private void toggleFrontBackMode() {
         frontBackModeEnabled = !frontBackModeEnabled;
-        solidGeometry.setCullHint(frontBackModeEnabled ? Spatial.CullHint.Always : Spatial.CullHint.Inherit);
-        frontFacingGeometry.setCullHint(frontBackModeEnabled ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
-        backFacingGeometry.setCullHint(frontBackModeEnabled ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        applyFaceInspectorVisibility();
         updateHud();
     }
 
     private void toggleCurveOverlay() {
         curveOverlayVisible = !curveOverlayVisible;
-        curveOverlayGeometry.setCullHint(curveOverlayVisible ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        applyFaceInspectorVisibility();
         updateHud();
+    }
+
+    /**
+     * Toggles "face inspector" mode: hides the shaded solid mesh, edge overlay, normal overlay,
+     * and front/back display, leaving only the (forced-visible) red authored-curve overlay and
+     * a per-curve name label, so the guide-curve network driving generation can be read on its
+     * own without the generated mesh cluttering the view.
+     */
+    private void toggleFaceInspectorMode() {
+        faceInspectorMode = !faceInspectorMode;
+        applyFaceInspectorVisibility();
+        updateHud();
+    }
+
+    /** Re-derives every overlay's cull hint from the current toggle flags and inspector mode. */
+    private void applyFaceInspectorVisibility() {
+        if (solidGeometry == null) return;
+        solidGeometry.setCullHint(
+                faceInspectorMode || frontBackModeEnabled ? Spatial.CullHint.Always : Spatial.CullHint.Inherit);
+        edgeOverlayGeometry.setCullHint(
+                !faceInspectorMode && edgeOverlayVisible ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        normalOverlayGeometry.setCullHint(
+                !faceInspectorMode && normalOverlayVisible ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        frontFacingGeometry.setCullHint(
+                !faceInspectorMode && frontBackModeEnabled ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        backFacingGeometry.setCullHint(
+                !faceInspectorMode && frontBackModeEnabled ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        curveOverlayGeometry.setCullHint(
+                (faceInspectorMode || curveOverlayVisible) && hasAuthoredCurves
+                        ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+        curveLabelNode.setCullHint(
+                faceInspectorMode && hasAuthoredCurves ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+    }
+
+    /**
+     * Serializes the currently generated geometry as an ASCII Wavefront OBJ file (one {@code v}
+     * line per vertex, one {@code f} line per face using 1-based indices) and places it on the
+     * system clipboard, so the actual mesh can be pasted/uploaded elsewhere instead of a
+     * screenshot.
+     */
+    private void copyGeometryToClipboard() {
+        StringBuilder obj = new StringBuilder();
+        obj.append("# Generative Mesh Library export\n");
+        obj.append("# generator: ").append(currentGenerator == null ? "-" : currentGenerator.displayName()).append('\n');
+        Map<VertexId, Integer> vertexIndices = new java.util.LinkedHashMap<>();
+        int nextIndex = 1;
+        for (Map.Entry<VertexId, ProtoVertex> entry : currentSnapshot.vertices().entrySet()) {
+            vertexIndices.put(entry.getKey(), nextIndex++);
+            com.planeguardian.assets.generation.api.Vector3 p = entry.getValue().position();
+            obj.append(String.format(java.util.Locale.ROOT, "v %.6f %.6f %.6f%n", p.x(), p.y(), p.z()));
+        }
+        for (ProtoFace face : currentSnapshot.faces().values()) {
+            obj.append('f');
+            for (LoopId loopId : face.loops()) {
+                ProtoLoop loop = currentSnapshot.loops().get(loopId);
+                obj.append(' ').append(vertexIndices.get(loop.vertexId()));
+            }
+            obj.append('\n');
+        }
+        Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(obj.toString()), null);
     }
 
     /** Cycles between the available SUT generators (Tube, Human Face). */
@@ -572,6 +661,8 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
                 "[4] Front/back display (yellow/blue): " + (frontBackModeEnabled ? "On" : "Off"),
                 "[5] Authored curve overlay (red): " + (curveOverlayVisible ? "On" : "Off"),
                 "[6] Switch SUT: " + (currentGenerator == null ? "-" : currentGenerator.displayName()),
+                "[7] Face inspector mode: " + (faceInspectorMode ? "On" : "Off"),
+                "[C] Copy geometry (OBJ) to clipboard",
                 "[Tab] Select mode: " + selectMode,
                 "[Click] Select " + (selectMode == SelectMode.FACE ? "face" : "edge"),
                 "[F] Frame selection  [Home] Frame all",
