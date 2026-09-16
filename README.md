@@ -8,6 +8,7 @@ Engine-agnostic mesh editing library extracted from `chasparos/PlaneGuardianAsse
 - `com.planeguardian.assets.generation.geometry.operations`
 - `com.planeguardian.assets.generation.geometry.eval` — `SUTGeometryInterface` and a basic `TubeGeometry` implementation used to exercise the geometry tools
 - `com.planeguardian.assets.generation.triangulation`
+- `com.planeguardian.assets.generation.skeleton` — a Pole/GuideCurve authoring language that generates clean, mirrored all-quad meshes; see [`docs/`](docs/) for the methodology and the `HumanFaceSkeleton` proof of concept
 - `com.planeguardian.assets.generation.adapters.jme` — converts engine-agnostic meshes to jME3 `Mesh` objects (triangle mesh + edge-line mesh) for the evaluation viewer
 - `com.planeguardian.assets.eval` — `GeometryEvaluatorApp`, a basic JME3 desktop app for visually exercising the geometry tools
 
