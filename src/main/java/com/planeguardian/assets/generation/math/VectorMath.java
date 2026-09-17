@@ -27,6 +27,26 @@ public final class VectorMath {
         return subtract(value, scale(unitAxis, dot(value, unitAxis)));
     }
 
+    /**
+     * The (unnormalized) Newell's-method normal of a closed polygon given in winding order:
+     * correct for both triangles and n-gons, and tolerant of mild non-planarity. Callers that
+     * need a unit normal should pass the result through {@link #normalize(Vector3)}.
+     */
+    public static Vector3 newellNormal(java.util.List<Vector3> polygon) {
+        double x = 0;
+        double y = 0;
+        double z = 0;
+        int size = polygon.size();
+        for (int index = 0; index < size; index++) {
+            Vector3 current = polygon.get(index);
+            Vector3 next = polygon.get((index + 1) % size);
+            x += (current.y() - next.y()) * (current.z() + next.z());
+            y += (current.z() - next.z()) * (current.x() + next.x());
+            z += (current.x() - next.x()) * (current.y() + next.y());
+        }
+        return new Vector3(x, y, z);
+    }
+
     public static Vector3 rotateAroundUnitAxis(Vector3 value, Vector3 unitAxis, double radians) {
         double cosine = StrictMath.cos(radians);
         double sine = StrictMath.sin(radians);

@@ -493,9 +493,10 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
 
     /**
      * Serializes the currently generated geometry as an ASCII Wavefront OBJ file (one {@code v}
-     * line per vertex, one {@code f} line per face using 1-based indices) and places it on the
-     * system clipboard, so the actual mesh can be pasted/uploaded elsewhere instead of a
-     * screenshot.
+     * line per vertex, one {@code vn} line per face using its Newell-method face normal, and one
+     * {@code f v//vn} line per face using 1-based indices) and places it on the system clipboard,
+     * so the actual mesh — including consistent per-face normals — can be pasted/uploaded
+     * elsewhere instead of a screenshot.
      */
     private void copyGeometryToClipboard() {
         StringBuilder obj = new StringBuilder();
@@ -508,13 +509,25 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
             com.planeguardian.assets.generation.api.Vector3 p = entry.getValue().position();
             obj.append(String.format(java.util.Locale.ROOT, "v %.6f %.6f %.6f%n", p.x(), p.y(), p.z()));
         }
+        int normalIndex = 1;
         for (ProtoFace face : currentSnapshot.faces().values()) {
+            List<com.planeguardian.assets.generation.api.Vector3> positions = new java.util.ArrayList<>();
+            for (LoopId loopId : face.loops()) {
+                ProtoLoop loop = currentSnapshot.loops().get(loopId);
+                positions.add(currentSnapshot.vertices().get(loop.vertexId()).position());
+            }
+            com.planeguardian.assets.generation.api.Vector3 normal =
+                    com.planeguardian.assets.generation.math.VectorMath.normalize(
+                            com.planeguardian.assets.generation.math.VectorMath.newellNormal(positions));
+            obj.append(String.format(java.util.Locale.ROOT, "vn %.6f %.6f %.6f%n", normal.x(), normal.y(), normal.z()));
+
             obj.append('f');
             for (LoopId loopId : face.loops()) {
                 ProtoLoop loop = currentSnapshot.loops().get(loopId);
-                obj.append(' ').append(vertexIndices.get(loop.vertexId()));
+                obj.append(' ').append(vertexIndices.get(loop.vertexId())).append("//").append(normalIndex);
             }
             obj.append('\n');
+            normalIndex++;
         }
         Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(obj.toString()), null);
     }

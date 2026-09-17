@@ -15,8 +15,9 @@ class HumanFaceSkeletonTest {
         TopologicalSkeleton skeleton = HumanFaceSkeleton.build();
 
         assertTrue(skeleton.isMirrored());
-        assertEquals(8, skeleton.holeCurveIds().size(),
-                "the eye ring (2 curves), mouth opening (3 curves), and back-of-head gap (3 curves) are holes");
+        assertEquals(9, skeleton.holeCurveIds().size(),
+                "the eye ring (2 curves), mouth opening (3 curves), and back-of-head gap "
+                        + "(4 curves, now that cheekToCrown is split by the temple pole) are holes");
     }
 
     @Test

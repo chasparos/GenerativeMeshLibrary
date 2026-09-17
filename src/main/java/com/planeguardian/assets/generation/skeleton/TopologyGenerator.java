@@ -374,7 +374,7 @@ public final class TopologyGenerator {
 
     private Pole findMatchingCenterPole(
             TopologicalSkeleton skeleton, List<Vector3> boundary, Set<String> claimedPoleIds, int requiredValence) {
-        Vector3 normal = newellNormal(boundary);
+        Vector3 normal = VectorMath.newellNormal(boundary);
         List<Pole> candidates = skeleton.poles().values().stream()
                 .filter(pole -> !claimedPoleIds.contains(pole.id()))
                 .filter(pole -> pole.requestedValence() == requiredValence)
@@ -386,20 +386,6 @@ public final class TopologyGenerator {
                             + "requestedValence == " + requiredValence + " located inside it; found " + candidates.size());
         }
         return candidates.get(0);
-    }
-
-    private static Vector3 newellNormal(List<Vector3> positions) {
-        double x = 0;
-        double y = 0;
-        double z = 0;
-        for (int index = 0; index < positions.size(); index++) {
-            Vector3 current = positions.get(index);
-            Vector3 next = positions.get((index + 1) % positions.size());
-            x += (current.y() - next.y()) * (current.z() + next.z());
-            y += (current.z() - next.z()) * (current.x() + next.x());
-            z += (current.x() - next.x()) * (current.y() + next.y());
-        }
-        return new Vector3(x, y, z);
     }
 
     /** Assumes a (roughly) convex, planar boundary; documented scope limitation for irregular patches. */
