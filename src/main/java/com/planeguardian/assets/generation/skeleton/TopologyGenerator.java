@@ -2,8 +2,11 @@ package com.planeguardian.assets.generation.skeleton;
 
 import com.planeguardian.assets.generation.api.Vector3;
 import com.planeguardian.assets.generation.geometry.operations.CatmullClarkSubdivisionOperation;
+import com.planeguardian.assets.generation.geometry.operations.FaceInsetOperation;
+import com.planeguardian.assets.generation.geometry.operations.RingFillOperation;
 import com.planeguardian.assets.generation.geometry.operations.VertexWeldOperation;
 import com.planeguardian.assets.generation.math.VectorMath;
+import com.planeguardian.assets.generation.topology.FaceId;
 import com.planeguardian.assets.generation.topology.ProtoFace;
 import com.planeguardian.assets.generation.topology.ProtoLoop;
 import com.planeguardian.assets.generation.topology.ProtoMeshBuilder;
@@ -54,6 +57,20 @@ public final class TopologyGenerator {
      * limit-surface position instead of a sharp cone apex.
      */
     public static final int DEFAULT_SUBDIVISION_LEVELS = 1;
+
+    /**
+     * The number of concentric quad "collar" rings inserted around every hole flagged via
+     * {@link TopologicalSkeleton#ringInsetCurveIds()} (for example an eye socket or mouth
+     * opening) before it is reopened, smaller, at their centre. See {@link #insetHoleRings}.
+     */
+    public static final int DEFAULT_HOLE_RING_INSET_LEVELS = 3;
+
+    /**
+     * The fraction each hole ring-inset pass shrinks toward the hole boundary's own centroid
+     * (see {@link FaceInsetOperation#inset}); {@value #DEFAULT_HOLE_RING_INSET_LEVELS} passes at
+     * this fraction leave a final opening roughly half the size of the originally authored hole.
+     */
+    public static final double DEFAULT_HOLE_RING_INSET_FRACTION = 0.22;
 
     /** Runs the full four-step pipeline (with the default subdivision level) and returns the generated mesh plus bookkeeping. */
     public GenerationResult generate(TopologicalSkeleton skeleton) {
@@ -211,12 +228,97 @@ public final class TopologyGenerator {
             if (skeleton.isHolePatch(patch)) {
                 // Every side is an authored open-boundary curve (see TopologicalSkeleton#holeCurveIds()),
                 // so this patch is an intentional opening (for example an eye socket or mouth) and is
-                // left unfilled rather than quadrangulated.
+                // left unfilled rather than quadrangulated. If the patch also opts into ring-inset (see
+                // TopologicalSkeleton#ringInsetCurveIds()), surround it with a few concentric collar
+                // rings before reopening a smaller hole at its centre, instead of leaving its full
+                // original boundary bare.
+                if (skeleton.isRingInsetHolePatch(patch)) {
+                    List<VertexId> boundaryLoop = patchBoundaryLoop(patch, curveVertices);
+                    insetHoleRings(skeleton, builder, boundaryLoop,
+                            DEFAULT_HOLE_RING_INSET_LEVELS, DEFAULT_HOLE_RING_INSET_FRACTION, patchCurveTags(patch));
+                }
                 continue;
             }
             fillPatch(builder, skeleton, patch, poleVertices, curveVertices, claimedPoleIds);
         }
         return new HalfMesh(builder, Map.copyOf(poleVertices), patches);
+    }
+
+    /**
+     * The full closed vertex loop bounding {@code patch}, walking each side in the patch's own
+     * traversal order and dropping every side's last vertex (shared with the next side's first).
+     */
+    private static List<VertexId> patchBoundaryLoop(SubPatch patch, Map<String, List<VertexId>> curveVertices) {
+        List<VertexId> loop = new ArrayList<>();
+        for (SubPatch.Side side : patch.sides()) {
+            List<VertexId> sideVertices = sideVertices(side, curveVertices);
+            loop.addAll(sideVertices.subList(0, sideVertices.size() - 1));
+        }
+        return loop;
+    }
+
+    /**
+     * Surrounds an open hole boundary with {@code ringCount} concentric quad rings: the loop is
+     * temporarily capped with one big n-gon face ({@link RingFillOperation}), that cap is inset
+     * {@code ringCount} times ({@link FaceInsetOperation}, each pass shrinking toward the loop's
+     * own centroid by {@code fraction} and leaving behind one new quad ring of border faces), and
+     * the final, smallest cap is removed again to reopen the hole — now bounded by a smaller copy
+     * of the original loop, encircled by {@code ringCount} new concentric rings. The original
+     * boundary vertices (and any authored pole among them) keep their exact position and edge
+     * count throughout: every inset pass only ever replaces the loop's <em>current innermost</em>
+     * cap face, so the very first pass is the only one that touches the original boundary's edges
+     * at all, and it does so by re-sharing them (not duplicating them) between the neighbouring
+     * authored patch and the new outermost collar ring.
+     *
+     * <p>If the skeleton is mirrored, any boundary vertex that starts out exactly on the symmetry
+     * plane (for example a mouth hole's on-axis corners) is re-projected back onto the plane after
+     * every pass, mirroring the same correction {@link #subdivideHalfMesh} applies: a centroid-
+     * directed inset blends in the loop's other, generally off-axis vertices, which would
+     * otherwise nudge an on-axis vertex off the plane and leave a crack once the half-mesh is
+     * mirrored and welded.</p>
+     */
+    private void insetHoleRings(
+            TopologicalSkeleton skeleton, ProtoMeshBuilder builder, List<VertexId> holeBoundary,
+            int ringCount, double fraction, Set<String> semanticGroups) {
+        if (ringCount < 0) throw new IllegalArgumentException("ringCount must be non-negative, got " + ringCount);
+        if (ringCount == 0) return;
+
+        Plane mirrorPlane = skeleton.isMirrored() ? skeleton.symmetryPlane() : null;
+        boolean[] onPlane = new boolean[holeBoundary.size()];
+        if (mirrorPlane != null) {
+            for (int i = 0; i < holeBoundary.size(); i++) {
+                onPlane[i] = mirrorPlane.contains(builder.requireVertex(holeBoundary.get(i)).position(), WELD_TOLERANCE_METRES);
+            }
+        }
+
+        FaceId cap = RingFillOperation.fill(builder, holeBoundary, false, semanticGroups);
+        for (int ring = 0; ring < ringCount; ring++) {
+            FaceInsetOperation.InsetResult result = FaceInsetOperation.inset(builder, cap, fraction);
+            cap = result.insetFace();
+            if (mirrorPlane != null) {
+                // Any border face whose two adjacent loop corners are both on the mirror plane
+                // (for example the segment of a mouth hole that runs along its on-axis seam
+                // curve) is itself entirely on the plane. Such a face is its own mirror image:
+                // mirroring and re-adding it would create a second, non-manifold copy of every
+                // one of its edges rather than the intended single interior face. Removing it
+                // here reopens that stretch of the ring as a bare seam, exactly like the
+                // original unfillable seam curve it replaces.
+                List<FaceId> borderFaces = result.borderFaces();
+                int n = onPlane.length;
+                for (int i = 0; i < n; i++) {
+                    if (onPlane[i] && onPlane[(i + 1) % n]) {
+                        builder.removeFace(borderFaces.get(i));
+                    }
+                }
+                List<VertexId> insetRing = result.insetRing();
+                for (int i = 0; i < insetRing.size(); i++) {
+                    if (!onPlane[i]) continue;
+                    VertexId vertexId = insetRing.get(i);
+                    builder.moveVertex(vertexId, mirrorPlane.project(builder.requireVertex(vertexId).position()));
+                }
+            }
+        }
+        builder.removeFace(cap);
     }
 
     private static List<VertexId> sideVertices(SubPatch.Side side, Map<String, List<VertexId>> curveVertices) {
@@ -544,6 +646,7 @@ public final class TopologyGenerator {
             Map<String, VertexId> poleVertices,
             Map<VertexId, VertexId> canonical,
             ProtoMeshSnapshot finalSnapshot) {
+        Set<String> ringInsetCornerPoleIds = ringInsetCornerPoleIds(skeleton);
         for (Pole pole : skeleton.poles().values()) {
             if (!pole.isOnSymmetryPlane()) continue;
             VertexId original = poleVertices.get(pole.id());
@@ -551,12 +654,30 @@ public final class TopologyGenerator {
             long valence = finalSnapshot.edges().values().stream()
                     .filter(edge -> edge.vertexA().equals(resolved) || edge.vertexB().equals(resolved))
                     .count();
-            if (valence != pole.requestedValence()) {
+            // A pole that is a corner of a ring-inset hole (see #insetHoleRings) gains exactly one
+            // extra edge beyond its authored requestedValence: the radial "spoke" connecting it to
+            // the first concentric collar ring. That spoke is a genuinely new topological feature
+            // the skeleton's own curve-based requestedValence formula (see TopologicalSkeleton)
+            // never accounted for, so it is added here rather than baked into the authored value.
+            long expectedValence = pole.requestedValence() + (ringInsetCornerPoleIds.contains(pole.id()) ? 1 : 0);
+            if (valence != expectedValence) {
                 throw new TopologyGenerationException(
                         "Post-weld verification failed for symmetry-plane pole " + pole.id() + ": expected valence "
-                                + pole.requestedValence() + " but the welded mesh has " + valence);
+                                + expectedValence + " but the welded mesh has " + valence);
             }
         }
+    }
+
+    /** Pole ids that are corners of a ring-inset hole patch (see {@link TopologicalSkeleton#isRingInsetHolePatch}). */
+    private static Set<String> ringInsetCornerPoleIds(TopologicalSkeleton skeleton) {
+        Set<String> poleIds = new HashSet<>();
+        for (SubPatch patch : skeleton.tracePatches()) {
+            if (!skeleton.isRingInsetHolePatch(patch)) continue;
+            for (SubPatch.Side side : patch.sides()) {
+                poleIds.add(side.fromPoleId());
+            }
+        }
+        return poleIds;
     }
 
     private static VertexId resolveCanonical(Map<VertexId, VertexId> canonical, VertexId id) {

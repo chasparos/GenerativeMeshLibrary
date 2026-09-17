@@ -65,6 +65,7 @@ public final class TopologicalSkeleton {
     private final boolean isMirrored;
     private final Plane symmetryPlane;
     private final Set<String> holeCurveIds;
+    private final Set<String> ringInsetCurveIds;
 
     public TopologicalSkeleton(Map<String, Pole> poles, List<GuideCurve> curves, boolean isMirrored, Plane symmetryPlane) {
         this(poles, curves, isMirrored, symmetryPlane, Set.of());
@@ -79,14 +80,37 @@ public final class TopologicalSkeleton {
     public TopologicalSkeleton(
             Map<String, Pole> poles, List<GuideCurve> curves, boolean isMirrored, Plane symmetryPlane,
             Set<String> holeCurveIds) {
+        this(poles, curves, isMirrored, symmetryPlane, holeCurveIds, Set.of());
+    }
+
+    /**
+     * @param holeCurveIds see the four-argument constructor overload.
+     * @param ringInsetCurveIds ids of {@link GuideCurve}s that, in addition to bounding a hole
+     *        (must be a subset of {@code holeCurveIds}), request that {@link TopologyGenerator}
+     *        surround the hole with a handful of concentric quad rings (an "eyelid"/"lip rim"
+     *        collar) before reopening a smaller hole at its centre, instead of leaving the hole's
+     *        full original boundary bare. Any traced hole {@link SubPatch} with at least one side
+     *        in this set gets the treatment, applied to its whole boundary loop.
+     */
+    public TopologicalSkeleton(
+            Map<String, Pole> poles, List<GuideCurve> curves, boolean isMirrored, Plane symmetryPlane,
+            Set<String> holeCurveIds, Set<String> ringInsetCurveIds) {
         Objects.requireNonNull(poles, "poles");
         Objects.requireNonNull(curves, "curves");
         Objects.requireNonNull(holeCurveIds, "holeCurveIds");
+        Objects.requireNonNull(ringInsetCurveIds, "ringInsetCurveIds");
         this.poles = Map.copyOf(poles);
         this.curves = List.copyOf(curves);
         this.isMirrored = isMirrored;
         this.symmetryPlane = symmetryPlane;
         this.holeCurveIds = Set.copyOf(holeCurveIds);
+        this.ringInsetCurveIds = Set.copyOf(ringInsetCurveIds);
+        for (String ringInsetCurveId : this.ringInsetCurveIds) {
+            if (!this.holeCurveIds.contains(ringInsetCurveId)) {
+                throw new IllegalArgumentException(
+                        "ringInsetCurveIds must be a subset of holeCurveIds, but " + ringInsetCurveId + " is not a hole curve");
+            }
+        }
 
         Map<String, GuideCurve> byId = new TreeMap<>();
         for (GuideCurve curve : this.curves) {
@@ -112,6 +136,16 @@ public final class TopologicalSkeleton {
     /** Whether every side of {@code patch} is one of {@link #holeCurveIds()}, so it should be left unfilled. */
     public boolean isHolePatch(SubPatch patch) {
         return !holeCurveIds.isEmpty() && patch.sides().stream().allMatch(side -> holeCurveIds.contains(side.curveId()));
+    }
+
+    /** Ids of the hole-bounding curves also requesting a concentric ring-inset collar (see the six-argument constructor). */
+    public Set<String> ringInsetCurveIds() {
+        return ringInsetCurveIds;
+    }
+
+    /** Whether {@code patch} is a hole ({@link #isHolePatch}) with at least one side in {@link #ringInsetCurveIds()}. */
+    public boolean isRingInsetHolePatch(SubPatch patch) {
+        return isHolePatch(patch) && patch.sides().stream().anyMatch(side -> ringInsetCurveIds.contains(side.curveId()));
     }
 
     /**
@@ -191,7 +225,7 @@ public final class TopologicalSkeleton {
             }
         }
         if (!replaced) throw new IllegalArgumentException("Cannot replace unknown curve: " + replacement.id());
-        return new TopologicalSkeleton(poles, updated, isMirrored, symmetryPlane, holeCurveIds);
+        return new TopologicalSkeleton(poles, updated, isMirrored, symmetryPlane, holeCurveIds, ringInsetCurveIds);
     }
 
     /** The curves incident to {@code poleId}, in authored order. */

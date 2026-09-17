@@ -252,9 +252,17 @@ public final class HumanFaceSkeleton {
                 "eyeUpperLoop", "eyeUnderLoop",
                 "upperLip", "lowerLip", "mouthSeam",
                 "cheekTemple", "templeCrown", "backOfHead", "cheekToNeck");
+        // The eye and mouth openings additionally request TopologyGenerator's ring-inset collar
+        // (see TopologicalSkeleton#ringInsetCurveIds()): a few concentric quad rings surrounding
+        // each hole before it reopens, smaller, at its centre -- the "orbital"/eyelid and lip-rim
+        // edge flow visible around a production face's eye and mouth openings, in place of the
+        // hole's full original boundary sitting bare against the brow/mask/jaw fill outside it.
+        // backOfHead and the other silhouette holes are deliberately excluded: they are large,
+        // intentionally unmodelled openings rather than anatomical orbits.
+        Set<String> ringInsetCurveIds = Set.of("eyeUpperLoop", "eyeUnderLoop", "upperLip", "lowerLip");
         Plane symmetryPlane = new Plane(Vector3.ZERO, new Vector3(1, 0, 0));
 
-        return new TopologicalSkeleton(poles, curves, true, symmetryPlane, holeCurveIds);
+        return new TopologicalSkeleton(poles, curves, true, symmetryPlane, holeCurveIds, ringInsetCurveIds);
     }
 
     private static void addPole(

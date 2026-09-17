@@ -41,4 +41,18 @@ class HumanFaceSkeletonTest {
         assertTrue(mesh.faces().size() > 0);
         assertTrue(mesh.vertices().size() > 0);
     }
+
+    @Test
+    void mouthAndEyeHolesRingInsetWithoutRaisingTheirRawControlCage() {
+        // Regression test for the on-axis mouth seam bug: upperLipMid/lowerLipMid's boundary
+        // loop crosses the mirror plane twice (once at each pole) via the unfillable, on-axis
+        // mouthSeam curve, so a naive ring-inset of the whole loop produced a border face lying
+        // entirely on the mirror plane; mirroring it then duplicated every one of its edges and
+        // failed TopologyGenerator's post-weld valence check. subdivisionLevels=0 isolates the
+        // ring-inset collar itself from the separately tested Catmull-Clark smoothing pass.
+        TopologicalSkeleton skeleton = HumanFaceSkeleton.build();
+        GenerationResult result = new TopologyGenerator().generate(skeleton, 0);
+
+        assertTrue(result.mesh().isValid(), () -> "issues: " + result.mesh().issues());
+    }
 }
