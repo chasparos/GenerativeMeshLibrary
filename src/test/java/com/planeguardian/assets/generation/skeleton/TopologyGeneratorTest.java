@@ -19,7 +19,10 @@ class TopologyGeneratorTest {
     @Test
     void cubeCageGeneratesSixQuadFacesWithValenceThreeAtEveryCorner() {
         TopologicalSkeleton cube = unitCubeSkeleton();
-        GenerationResult result = new TopologyGenerator().generate(cube);
+        // subdivisionLevels=0: this test validates the raw control-cage quadrangulation invariants
+        // (exact vertex/edge/face counts and per-corner valence), not the (separately tested)
+        // Catmull-Clark refinement applied by the default generate(skeleton) overload.
+        GenerationResult result = new TopologyGenerator().generate(cube, 0);
         ProtoMeshSnapshot mesh = result.mesh();
 
         assertTrue(mesh.isValid(), () -> "issues: " + mesh.issues());
@@ -86,7 +89,9 @@ class TopologyGeneratorTest {
         }
 
         TopologicalSkeleton skeleton = new TopologicalSkeleton(poles, curves, true, symmetryPlane);
-        GenerationResult result = new TopologyGenerator().generate(skeleton);
+        // subdivisionLevels=0: this test validates the raw mirror-and-weld vertex/edge/face counts,
+        // not the (separately tested) Catmull-Clark refinement applied by generate(skeleton).
+        GenerationResult result = new TopologyGenerator().generate(skeleton, 0);
 
         assertTrue(result.mesh().isValid(), () -> "issues: " + result.mesh().issues());
         // 4 far (I) + 4 mirrored-far (I') + 4 shared seam (S) vertices; 4 far + 4 mirrored-far

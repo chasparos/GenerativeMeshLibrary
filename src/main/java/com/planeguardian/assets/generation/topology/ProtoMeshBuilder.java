@@ -83,6 +83,18 @@ public final class ProtoMeshBuilder {
         return edge.freeze();
     }
 
+    /**
+     * Repositions an existing vertex in place, preserving its identity (and every edge/loop
+     * reference to it). Used by mesh-refinement passes (for example Catmull-Clark subdivision)
+     * that need to relocate a vertex to a smoothed "vertex point" without renumbering it, so that
+     * callers tracking a vertex's identity (for example a pole-to-vertex map) stay valid.
+     */
+    public void moveVertex(VertexId id, Vector3 newPosition) {
+        requireVertex(id);
+        java.util.Objects.requireNonNull(newPosition, "newPosition");
+        vertices.put(id, new ProtoVertex(id, newPosition));
+    }
+
     /** Removes an isolated vertex. Its identity remains retired. */
     public ProtoVertex removeVertex(VertexId id) {
         ProtoVertex vertex = requireVertex(id);

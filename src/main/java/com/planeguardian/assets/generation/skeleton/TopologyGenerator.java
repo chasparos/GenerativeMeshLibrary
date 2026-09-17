@@ -1,6 +1,7 @@
 package com.planeguardian.assets.generation.skeleton;
 
 import com.planeguardian.assets.generation.api.Vector3;
+import com.planeguardian.assets.generation.geometry.operations.CatmullClarkSubdivisionOperation;
 import com.planeguardian.assets.generation.geometry.operations.VertexWeldOperation;
 import com.planeguardian.assets.generation.math.VectorMath;
 import com.planeguardian.assets.generation.topology.ProtoFace;
@@ -45,8 +46,27 @@ public final class TopologyGenerator {
     private static final int MAX_PARITY_REPAIR_ITERATIONS = 64;
     private static final double WELD_TOLERANCE_METRES = 1.0e-6;
 
-    /** Runs the full four-step pipeline and returns the generated mesh plus bookkeeping. */
+    /**
+     * The number of Catmull-Clark subdivision passes applied to the half-mesh before mirroring
+     * (see {@link CatmullClarkSubdivisionOperation}). One pass turns the coarse "control cage"
+     * quadrangulation (flat Coons patches and single-pole fans) into a mesh with four times as
+     * many, genuinely curved quads and relaxes every fan-fill phantom pole toward its smooth
+     * limit-surface position instead of a sharp cone apex.
+     */
+    public static final int DEFAULT_SUBDIVISION_LEVELS = 1;
+
+    /** Runs the full four-step pipeline (with the default subdivision level) and returns the generated mesh plus bookkeeping. */
     public GenerationResult generate(TopologicalSkeleton skeleton) {
+        return generate(skeleton, DEFAULT_SUBDIVISION_LEVELS);
+    }
+
+    /**
+     * Runs the full four-step pipeline, applying {@code subdivisionLevels} Catmull-Clark
+     * subdivision passes (see {@link CatmullClarkSubdivisionOperation}) to the half-mesh before
+     * it is mirrored. Pass {@code 0} to skip subdivision and get the raw control-cage
+     * quadrangulation (useful for debugging or for viewing the authored topology directly).
+     */
+    public GenerationResult generate(TopologicalSkeleton skeleton, int subdivisionLevels) {
         Objects.requireNonNull(skeleton, "skeleton");
 
         ParityRepairResult repair = repairParity(skeleton);
@@ -54,9 +74,41 @@ public final class TopologyGenerator {
         Map<String, BoundaryConstraint> boundaryConstraints = mapBoundaryConstraints(repaired);
 
         HalfMesh halfMesh = quadrangulate(repaired);
+        subdivideHalfMesh(repaired, halfMesh.builder(), subdivisionLevels);
         ProtoMeshSnapshot finalMesh = mirrorAndWeld(repaired, halfMesh.builder(), halfMesh.poleVertices());
 
         return new GenerationResult(finalMesh, repaired, repair.appliedFixes(), boundaryConstraints);
+    }
+
+    /**
+     * Applies {@code levels} Catmull-Clark passes ({@link CatmullClarkSubdivisionOperation}) to the
+     * half-mesh, re-locking any vertex that started exactly on the mirror plane back onto it after
+     * every pass. A symmetry-plane pole's smoothed "vertex point" can legitimately blend in a
+     * boundary edge that leaves the plane (for example {@code lowerLipMid}, whose {@code lowerLip}
+     * boundary edge runs to the off-axis {@code mouthCorner} pole) alongside one that stays on it
+     * (its {@code lowerLipSeam} boundary edge, both of whose endpoints are on-axis); left
+     * uncorrected this nudges the pole off the plane, so its two mirrored copies no longer coincide
+     * and {@link #weldCoincidentVertices} fails to reunite them into the single shared vertex
+     * {@link #verifySymmetryPlaneValences} expects.
+     */
+    private void subdivideHalfMesh(TopologicalSkeleton skeleton, ProtoMeshBuilder builder, int levels) {
+        if (levels < 0) throw new IllegalArgumentException("levels must be non-negative, got " + levels);
+        Plane mirrorPlane = skeleton.isMirrored() ? skeleton.symmetryPlane() : null;
+        for (int level = 0; level < levels; level++) {
+            Set<VertexId> onPlaneBefore = mirrorPlane == null ? Set.of() : verticesOnPlane(builder, mirrorPlane);
+            CatmullClarkSubdivisionOperation.subdivide(builder);
+            for (VertexId vertexId : onPlaneBefore) {
+                builder.moveVertex(vertexId, mirrorPlane.project(builder.requireVertex(vertexId).position()));
+            }
+        }
+    }
+
+    private static Set<VertexId> verticesOnPlane(ProtoMeshBuilder builder, Plane plane) {
+        Set<VertexId> onPlane = new HashSet<>();
+        for (ProtoVertex vertex : builder.snapshot().vertices().values()) {
+            if (plane.contains(vertex.position(), WELD_TOLERANCE_METRES)) onPlane.add(vertex.id());
+        }
+        return onPlane;
     }
 
     // --- Step 1: pre-generation parity validation -------------------------------------------------
