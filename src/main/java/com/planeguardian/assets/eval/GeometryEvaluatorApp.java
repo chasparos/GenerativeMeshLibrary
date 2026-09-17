@@ -465,6 +465,7 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
         if (!faceInspectorMode) {
             selectedCurveIndex = -1;
             updateSelectedCurveLabel();
+            updateHighlight();
         }
         applyFaceInspectorVisibility();
         updateHud();
@@ -588,6 +589,7 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
         }
         selectedCurveIndex = bestIndex;
         updateSelectedCurveLabel();
+        updateHighlight();
         updateHud();
     }
 
@@ -666,29 +668,66 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
             highlightGeometry = new Geometry("selection-highlight-edge", buildEdgeHighlightMesh(endpoints));
             highlightGeometry.setMaterial(edgeHighlightMaterial);
             meshNode.attachChild(highlightGeometry);
+        } else if (selectedCurveIndex >= 0 && selectedCurveIndex < inspectorCurves.size()) {
+            List<FaceId> influencedFaces = facesInfluencedByCurve(inspectorCurves.get(selectedCurveIndex).id());
+            if (!influencedFaces.isEmpty()) {
+                highlightGeometry = new Geometry("selection-highlight-patches", buildPatchHighlightMesh(influencedFaces));
+                highlightGeometry.setMaterial(faceHighlightMaterial);
+                meshNode.attachChild(highlightGeometry);
+            }
         }
+    }
+
+    /**
+     * Every face tagged with the {@code "curve:" + curveId} semantic group (see
+     * {@link ProtoFace#semanticGroups()} and {@code TopologyGenerator#patchCurveTags}), i.e. every
+     * quad patch whose boundary was bounded (directly, or as one of the fan wedges of an n-sided
+     * patch) by the authored curve {@code curveId} -- so a face-inspector curve selection can
+     * highlight every patch that curve influences, not just a single picked face.
+     */
+    private List<FaceId> facesInfluencedByCurve(String curveId) {
+        String tag = "curve:" + curveId;
+        List<FaceId> matches = new ArrayList<>();
+        for (ProtoFace face : currentSnapshot.faces().values()) {
+            if (face.semanticGroups().contains(tag)) {
+                matches.add(face.id());
+            }
+        }
+        return matches;
     }
 
     /** Fan-triangulates a (convex) face's corners for the highlight overlay. */
     private Mesh buildFaceHighlightMesh(FaceId faceId) {
-        ProtoFace face = currentSnapshot.faces().get(faceId);
-        List<Vector3f> corners = new ArrayList<>(face.loops().size());
-        for (LoopId loopId : face.loops()) {
-            ProtoLoop loop = currentSnapshot.loops().get(loopId);
-            ProtoVertex vertex = currentSnapshot.vertices().get(loop.vertexId());
-            corners.add(JmeMeshAdapter.toVector3f(vertex.position()));
-        }
+        return buildPatchHighlightMesh(List.of(faceId));
+    }
+
+    /**
+     * Fan-triangulates every face in {@code faceIds} into a single combined highlight overlay
+     * mesh, used to show every quad patch influenced by the currently selected authored curve
+     * (see {@link #updateHighlight()}).
+     */
+    private Mesh buildPatchHighlightMesh(List<FaceId> faceIds) {
+        List<Vector3f> positions = new ArrayList<>();
         List<Integer> indices = new ArrayList<>();
-        for (int index = 1; index < corners.size() - 1; index++) {
-            indices.add(0);
-            indices.add(index);
-            indices.add(index + 1);
+        for (FaceId faceId : faceIds) {
+            ProtoFace face = currentSnapshot.faces().get(faceId);
+            int base = positions.size();
+            for (LoopId loopId : face.loops()) {
+                ProtoLoop loop = currentSnapshot.loops().get(loopId);
+                ProtoVertex vertex = currentSnapshot.vertices().get(loop.vertexId());
+                positions.add(JmeMeshAdapter.toVector3f(vertex.position()));
+            }
+            for (int index = 1; index < face.loops().size() - 1; index++) {
+                indices.add(base);
+                indices.add(base + index);
+                indices.add(base + index + 1);
+            }
         }
-        java.nio.FloatBuffer positions = BufferUtils.createFloatBuffer(corners.size() * 3);
-        corners.forEach(corner -> positions.put(corner.x).put(corner.y).put(corner.z));
+        java.nio.FloatBuffer positionBuffer = BufferUtils.createFloatBuffer(positions.size() * 3);
+        positions.forEach(corner -> positionBuffer.put(corner.x).put(corner.y).put(corner.z));
         int[] indexArray = indices.stream().mapToInt(Integer::intValue).toArray();
         Mesh mesh = new Mesh();
-        mesh.setBuffer(VertexBuffer.Type.Position, 3, positions);
+        mesh.setBuffer(VertexBuffer.Type.Position, 3, positionBuffer);
         mesh.setBuffer(VertexBuffer.Type.Index, 3, indexArray);
         mesh.updateBound();
         mesh.updateCounts();
