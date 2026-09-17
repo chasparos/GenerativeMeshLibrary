@@ -209,7 +209,21 @@ public final class TopologyGenerator {
         List<VertexId> right = sideVertices(s1, curveVertices); // B -> C, size v+1
         List<VertexId> topReversed = sideVertices(s2, curveVertices); // C -> D, size u+1
         List<VertexId> leftReversed = sideVertices(s3, curveVertices); // D -> A, size v+1
-        fillQuadGrid(builder, bottom, right, topReversed, leftReversed);
+        fillQuadGrid(builder, bottom, right, topReversed, leftReversed, patchCurveTags(patch));
+    }
+
+    /**
+     * The set of semantic-group tags a patch's generated faces should carry: one
+     * {@code "curve:" + curveId} tag per distinct boundary curve, so a viewer (for example a
+     * "face inspector" mode) can look up every face descending from a patch bounded by a given
+     * authored curve (see {@link ProtoFace#semanticGroups()}).
+     */
+    private static Set<String> patchCurveTags(SubPatch patch) {
+        Set<String> tags = new java.util.LinkedHashSet<>();
+        for (SubPatch.Side side : patch.sides()) {
+            tags.add("curve:" + side.curveId());
+        }
+        return Set.copyOf(tags);
     }
 
     /**
@@ -225,7 +239,8 @@ public final class TopologyGenerator {
             List<VertexId> bottom,
             List<VertexId> right,
             List<VertexId> topReversed,
-            List<VertexId> leftReversed) {
+            List<VertexId> leftReversed,
+            Set<String> semanticGroups) {
         int u = bottom.size() - 1;
         int v = right.size() - 1;
 
@@ -262,7 +277,10 @@ public final class TopologyGenerator {
 
         for (int i = 0; i < u; i++) {
             for (int j = 0; j < v; j++) {
-                builder.addFace(List.of(grid[i][j], grid[i + 1][j], grid[i + 1][j + 1], grid[i][j + 1]));
+                builder.addFace(
+                        List.of(grid[i][j], grid[i + 1][j], grid[i + 1][j + 1], grid[i][j + 1]),
+                        java.util.Collections.nCopies(4, com.planeguardian.assets.generation.topology.CornerAttributes.EMPTY),
+                        semanticGroups);
             }
         }
     }
