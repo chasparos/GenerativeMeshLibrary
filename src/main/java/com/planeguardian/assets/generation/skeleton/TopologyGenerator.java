@@ -209,6 +209,25 @@ public final class TopologyGenerator {
         List<VertexId> right = sideVertices(s1, curveVertices); // B -> C, size v+1
         List<VertexId> topReversed = sideVertices(s2, curveVertices); // C -> D, size u+1
         List<VertexId> leftReversed = sideVertices(s3, curveVertices); // D -> A, size v+1
+        fillQuadGrid(builder, bottom, right, topReversed, leftReversed);
+    }
+
+    /**
+     * Fills a structured u-by-v grid of quads bounded by 4 vertex chains via bilinear transfinite
+     * interpolation (a Coons patch): {@code bottom} (A to B, u+1 vertices), {@code right} (B to C,
+     * v+1 vertices), {@code topReversed} (C to D, u+1 vertices, i.e. already stored walking from C
+     * to D), and {@code leftReversed} (D to A, v+1 vertices, walking from D to A). The four chains
+     * must agree on shared corners: {@code bottom[0] == leftReversed[v]}, {@code bottom[u] ==
+     * right[0]}, {@code right[v] == topReversed[0]}, {@code topReversed[u] == leftReversed[0]}.
+     */
+    private void fillQuadGrid(
+            ProtoMeshBuilder builder,
+            List<VertexId> bottom,
+            List<VertexId> right,
+            List<VertexId> topReversed,
+            List<VertexId> leftReversed) {
+        int u = bottom.size() - 1;
+        int v = right.size() - 1;
 
         VertexId[][] grid = new VertexId[u + 1][v + 1];
         for (int i = 0; i <= u; i++) grid[i][0] = bottom.get(i);
@@ -249,10 +268,19 @@ public final class TopologyGenerator {
     }
 
     /**
-     * Fills an n-sided (n != 4) patch with a single central-pole fan of n quads, in the spirit of a
-     * single Catmull-Clark subdivision level around an irregular vertex. Requires every boundary side
-     * to have {@code densitySegmentCount == 2} and requires exactly one unclaimed interior
-     * {@link Pole} of matching {@code requestedValence == n} located inside the patch.
+     * Fills an n-sided (n != 4) patch with a single central-pole fan, in the spirit of a single
+     * Catmull-Clark subdivision level around an irregular vertex. Requires every boundary side to
+     * share the same, even {@code densitySegmentCount} ({@code density}) and requires exactly one
+     * unclaimed interior {@link Pole} of matching {@code requestedValence == n} located inside the
+     * patch.
+     *
+     * <p>Each side is split at its own midpoint (index {@code density / 2}) into two halves; the
+     * quad "wedge" between two adjacent half-sides and the center pole (exactly the single quad
+     * produced when {@code density == 2}) is generalised into a full {@code density/2}-by-
+     * {@code density/2} Coons grid, using a straight synthetic "spoke" from each side's midpoint to
+     * the center pole as the wedge's two radial edges. Every spoke is built once and shared by the
+     * two wedges that meet at that midpoint, so the fan stays crack-free and every quad's diagonal
+     * neighbours can only be the fan's own quads or the patch's authored boundary curves.</p>
      */
     private void fillPoleFanPatch(
             ProtoMeshBuilder builder,
@@ -262,33 +290,68 @@ public final class TopologyGenerator {
             Map<String, List<VertexId>> curveVertices,
             Set<String> claimedPoleIds) {
         int n = patch.sideCount();
+        int density = patch.sides().get(0).densitySegmentCount();
         for (SubPatch.Side side : patch.sides()) {
-            if (side.densitySegmentCount() != 2) {
+            if (side.densitySegmentCount() != density) {
                 throw new TopologyGenerationException(
-                        "A " + n + "-sided sub-patch requires every boundary curve to have densitySegmentCount == 2 "
-                                + "(curve " + side.curveId() + " has " + side.densitySegmentCount() + ")");
+                        "A " + n + "-sided sub-patch requires every boundary curve to share the same densitySegmentCount "
+                                + "(curve " + side.curveId() + " has " + side.densitySegmentCount() + ", expected " + density + ")");
             }
         }
+        if (density % 2 != 0) {
+            throw new TopologyGenerationException(
+                    "A " + n + "-sided sub-patch requires an even densitySegmentCount to build its radial fan grid "
+                            + "(got " + density + ")");
+        }
+        int half = density / 2;
 
-        List<VertexId> ring = new ArrayList<>(2 * n);
+        List<List<VertexId>> firstHalfPerSide = new ArrayList<>(n); // corner_k .. mid_k
+        List<List<VertexId>> secondHalfPerSide = new ArrayList<>(n); // mid_k .. corner_{k+1}
         List<Vector3> ringPositions = new ArrayList<>(2 * n);
         for (SubPatch.Side side : patch.sides()) {
-            List<VertexId> vertices = sideVertices(side, curveVertices); // [corner_k, mid_k, corner_{k+1}]
-            ring.add(vertices.get(0));
-            ring.add(vertices.get(1));
+            List<VertexId> full = sideVertices(side, curveVertices); // size density + 1
+            firstHalfPerSide.add(full.subList(0, half + 1));
+            secondHalfPerSide.add(full.subList(half, full.size()));
+            ringPositions.add(builder.requireVertex(full.get(0)).position());
+            ringPositions.add(builder.requireVertex(full.get(half)).position());
         }
-        for (VertexId id : ring) ringPositions.add(builder.requireVertex(id).position());
 
         Pole center = findMatchingCenterPole(skeleton, ringPositions, claimedPoleIds, n);
         VertexId centerVertex = poleVertices.get(center.id());
+        Vector3 centerPosition = builder.requireVertex(centerVertex).position();
 
-        int size = ring.size();
+        // One synthetic straight spoke per side's midpoint (mid_k -> center), built once and
+        // shared between the two wedges meeting at that midpoint (as its own wedge's "right" edge,
+        // and reversed as the previous wedge's "top" edge).
+        List<List<VertexId>> spokePerSide = new ArrayList<>(n);
         for (int k = 0; k < n; k++) {
-            int cornerIndex = 2 * k;
-            int midIndex = 2 * k + 1;
-            int previousMidIndex = (2 * k - 1 + size) % size;
-            builder.addFace(List.of(ring.get(cornerIndex), ring.get(midIndex), centerVertex, ring.get(previousMidIndex)));
+            VertexId midVertex = firstHalfPerSide.get(k).get(half);
+            Vector3 midPosition = builder.requireVertex(midVertex).position();
+            List<VertexId> spoke = new ArrayList<>(half + 1);
+            spoke.add(midVertex);
+            for (int step = 1; step < half; step++) {
+                double t = (double) step / half;
+                spoke.add(builder.addVertex(
+                        VectorMath.add(VectorMath.scale(midPosition, 1 - t), VectorMath.scale(centerPosition, t))));
+            }
+            spoke.add(centerVertex);
+            spokePerSide.add(spoke);
         }
+
+        for (int k = 0; k < n; k++) {
+            int previous = (k - 1 + n) % n;
+            List<VertexId> bottom = firstHalfPerSide.get(k); // corner_k -> mid_k
+            List<VertexId> right = spokePerSide.get(k); // mid_k -> center
+            List<VertexId> topReversed = reversedCopy(spokePerSide.get(previous)); // center -> mid_{k-1}
+            List<VertexId> leftReversed = secondHalfPerSide.get(previous); // mid_{k-1} -> corner_k
+            fillQuadGrid(builder, bottom, right, topReversed, leftReversed);
+        }
+    }
+
+    private static List<VertexId> reversedCopy(List<VertexId> vertices) {
+        List<VertexId> reversed = new ArrayList<>(vertices);
+        Collections.reverse(reversed);
+        return reversed;
     }
 
     private Pole findMatchingCenterPole(

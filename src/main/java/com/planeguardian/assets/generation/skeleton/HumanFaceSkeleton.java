@@ -53,18 +53,23 @@ import java.util.Set;
  *       eye and mouth, means the back of the head is simply never generated, instead of
  *       being forced into a small, awkwardly fanned cap.</li>
  *   <li>The full blueprint's Nasal Ring, Nasolabial pole, Jaw pole, and Zygomatic Arch
- *       are collapsed into a leaner off-axis pole set ({@code innerEyeNose}, {@code cheek},
- *       {@code mouthCorner}) connected by direct curves, so the remaining filled regions
- *       (temple, brow, mask, nose/mouth, and jaw) stay small, local triangles and
- *       pentagons that the single-center-pole fan fill can handle (it requires a
- *       genuinely convex, roughly planar boundary).</li>
- *   <li>Every filled, non-hole region the curve network traces out (the temple, brow,
- *       mask, nose/mouth, and jaw) is filled with a single-center-pole fan anchored on a
- *       small "phantom" {@link Pole} of matching valence placed inside its boundary and
- *       left unreferenced by any curve (see {@link TopologyGenerator#fillPoleFanPatch}).
- *       Every {@link GuideCurve} is authored at {@code densitySegmentCount == 2}, which
- *       satisfies the fan fill's density requirement everywhere at once and keeps every
- *       patch boundary sum trivially even.</li>
+ *       are collapsed into a leaner off-axis pole set ({@code innerEyeNose},
+ *       {@code eyeOuterCorner}, {@code cheek}, {@code mouthCorner}) connected by direct
+ *       curves. {@code eyeOuterCorner} marks the actual outer corner of the eye (rather than
+ *       stretching the eye ring all the way out to the cheekbone), which both keeps the eye
+ *       a believable width and turns the old temple/mask fan-triangles into genuine 4-sided
+ *       Coons patches ({@code glabella}/{@code crown}/{@code cheek}/{@code eyeOuterCorner} and
+ *       {@code innerEyeNose}/{@code eyeOuterCorner}/{@code cheek}/{@code mouthCorner}). Only
+ *       the small brow triangle and the nose/mouth and jaw pentagons still need the
+ *       single-center-pole fan fill (it requires a genuinely convex, roughly planar
+ *       boundary).</li>
+ *   <li>Each remaining filled fan region (brow, nose/mouth, jaw) is filled with a
+ *       single-center-pole fan anchored on a small "phantom" {@link Pole} of matching
+ *       valence placed inside its boundary and left unreferenced by any curve (see
+ *       {@link TopologyGenerator#fillPoleFanPatch}). Every {@link GuideCurve} shares the
+ *       same {@code densitySegmentCount} ({@value #DENSITY_SEGMENT_COUNT}, an even number
+ *       so every patch boundary sum stays even too), fine enough that no single boundary
+ *       segment spans more than a tenth of its curve's length.</li>
  * </ul>
  */
 public final class HumanFaceSkeleton {
@@ -92,9 +97,13 @@ public final class HumanFaceSkeleton {
         addPole(poles, "mentalCleft", 0.0, 0.2675, 0.4006, 2, true);
         addPole(poles, "neckBase", 0.0, 0.0190, 0.2323, 3, true);
 
-        // Off-axis interior poles.
-        addPole(poles, "innerEyeNose", 0.1984, 0.7154, 0.3780, 4, false);
-        addPole(poles, "cheek", 0.3590, 0.5838, 0.2323, 6, false);
+        // Off-axis interior poles. innerEyeNose sits close to the bridge of the nose (not out
+        // near the cheekbone) and eyeOuterCorner marks the true outer eye corner, so the eye
+        // ring below spans only the width of an actual eye instead of the whole nose-to-cheek
+        // temple region.
+        addPole(poles, "innerEyeNose", 0.1350, 0.7154, 0.3780, 4, false);
+        addPole(poles, "eyeOuterCorner", 0.3000, 0.7100, 0.3050, 4, false);
+        addPole(poles, "cheek", 0.3590, 0.5838, 0.2323, 4, false);
         addPole(poles, "mouthCorner", 0.2637, 0.4685, 0.3452, 4, false);
 
         // Phantom fan-center poles: unreferenced by any curve, existing only to anchor
@@ -102,12 +111,14 @@ public final class HumanFaceSkeleton {
         // patches traced above, at each patch's approximate centre and matching side count.
         // Note there is no fan pole for the region behind the cheek (bounded by cheekToCrown,
         // backOfHead, cheekToNeck): that patch is deliberately left as a hole (see class Javadoc)
-        // rather than filled, so it needs no phantom center.
-        addPole(poles, "templeFan", 0.1187, 0.8499, 0.2436, 3, false);
-        addPole(poles, "browFan", 0.1115, 0.7040, 0.3790, 3, false);
-        addPole(poles, "maskFan", 0.2697, 0.5409, 0.3292, 3, false);
-        addPole(poles, "noseMouthFan", 0.0924, 0.5982, 0.4099, 5, false);
-        addPole(poles, "jawFan", 0.1245, 0.3522, 0.3301, 5, false);
+        // rather than filled, so it needs no phantom center. The temple (glabella/crown/cheek/
+        // eyeOuterCorner) and mask (innerEyeNose/eyeOuterCorner/cheek/mouthCorner) regions are
+        // now genuine 4-sided Coons patches (see eyeOuterCorner above), so they need no phantom
+        // center either -- only the small brow triangle, and the nose/mouth and jaw pentagons,
+        // still rely on a fan fill.
+        addPole(poles, "browFan", 0.1862, 0.7754, 0.3538, 3, false);
+        addPole(poles, "noseMouthFan", 0.0954, 0.5869, 0.4205, 5, false);
+        addPole(poles, "jawFan", 0.1323, 0.3313, 0.3300, 5, false);
 
         List<GuideCurve> curves = List.of(
                 // Centreline seam curves, closing the centreline into a loop from crown to neck.
@@ -125,20 +136,22 @@ public final class HumanFaceSkeleton {
                 curveVia("throat", "mentalCleft", "neckBase", 0.0, 0.1038, 0.3472),
                 curveVia("backOfHead", "neckBase", "crown", 0.0, 0.6043, 0.1977),
 
-                // Eye ring. The two curves are given distinct, modest bulges (control points
-                // gently off the straight line, one out and one in) so they are genuinely
-                // distinguishable during rotation-order sorting -- required for tracePatches() to
-                // isolate them as their own small open-boundary loop -- while still tracing a
-                // shallow, eye-shaped lens instead of a sharp spike.
-                curveVia("browRidge", "glabella", "cheek", 0.1600, 0.7200, 0.3000),
-                curveVia("noseBridge", "glabella", "innerEyeNose", 0.1058, 0.7397, 0.4299),
-                curveVia("eyeUpperLoop", "innerEyeNose", "cheek", 0.2984, 0.6566, 0.3267),
-                curveVia("eyeUnderLoop", "innerEyeNose", "cheek", 0.2896, 0.6535, 0.3171),
+                // Eye ring, now bounded by eyeOuterCorner instead of reaching all the way out to
+                // cheek: eyeUpperLoop bulges up (away from the brow triangle, toward the browRidge
+                // side) and eyeUnderLoop bulges down, so the eye reads as a proper open lens sized
+                // like an actual eye instead of spanning the whole nose-to-cheekbone width.
+                curveVia("browRidge", "glabella", "eyeOuterCorner", 0.1800, 0.8000, 0.3550),
+                curveVia("noseBridge", "glabella", "innerEyeNose", 0.0700, 0.7397, 0.4299),
+                curveVia("eyeUpperLoop", "innerEyeNose", "eyeOuterCorner", 0.2200, 0.7500, 0.3500),
+                curveVia("eyeUnderLoop", "innerEyeNose", "eyeOuterCorner", 0.2050, 0.6600, 0.3350),
+                // Temple bridge: closes eyeOuterCorner back to cheek, turning the old temple and
+                // mask fan-triangles into genuine 4-sided Coons patches (see class Javadoc).
+                curveVia("templeBridge", "eyeOuterCorner", "cheek", 0.3350, 0.6550, 0.2700),
 
                 // Nose / cheek mask: directly links the eye-nose and mouth-corner poles so the
-                // mask region between the two hole rings stays a small, local pentagon instead of
+                // mask region between the two hole rings stays a small, local quad instead of
                 // wrapping around the whole lower face.
-                curveVia("maskLink", "innerEyeNose", "mouthCorner", 0.2472, 0.5949, 0.3868),
+                curveVia("maskLink", "innerEyeNose", "mouthCorner", 0.2000, 0.5949, 0.3868),
                 curveVia("cheekToMouth", "cheek", "mouthCorner", 0.3333, 0.5245, 0.3091),
 
                 // Outer (temple/jaw) silhouette: closes the cheek pole back onto the centreline
@@ -148,8 +161,10 @@ public final class HumanFaceSkeleton {
                 curveVia("cheekToNeck", "cheek", "neckBase", 0.1935, 0.2820, 0.2504),
 
                 // Mouth opening: same bulge trick as the eye ring, above/below the straight line.
+                // lowerLip's control point is pulled forward (toward larger z) so the lip bulges
+                // outward like a real lower lip instead of curving back into the mouth cavity.
                 curveVia("upperLip", "upperLipMid", "mouthCorner", 0.1381, 0.4783, 0.4154),
-                curveVia("lowerLip", "mouthCorner", "lowerLipMid", 0.1257, 0.4502, 0.3744));
+                curveVia("lowerLip", "mouthCorner", "lowerLipMid", 0.1500, 0.4300, 0.4100));
 
         Set<String> holeCurveIds = Set.of(
                 "eyeUpperLoop", "eyeUnderLoop",
@@ -165,7 +180,15 @@ public final class HumanFaceSkeleton {
         poles.put(id, new Pole(id, new Vector3(x, y, z), requestedValence, onSymmetryPlane));
     }
 
+    /**
+     * Every curve's tessellation density, chosen so no boundary segment spans more than
+     * roughly a tenth of its curve's length (deltaT &lt;= 0.1), giving the previewer and any
+     * downstream quadrangulation enough samples to resolve real curvature instead of a coarse,
+     * faceted approximation.
+     */
+    private static final int DENSITY_SEGMENT_COUNT = 10;
+
     private static GuideCurve curveVia(String id, String startPoleId, String endPoleId, double x, double y, double z) {
-        return new GuideCurve(id, startPoleId, endPoleId, List.of(new Vector3(x, y, z)), 2);
+        return new GuideCurve(id, startPoleId, endPoleId, List.of(new Vector3(x, y, z)), DENSITY_SEGMENT_COUNT);
     }
 }
