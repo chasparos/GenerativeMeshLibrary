@@ -362,7 +362,7 @@ public final class TopologyGenerator {
             List<VertexId> right = spokePerSide.get(k); // mid_k -> center
             List<VertexId> topReversed = reversedCopy(spokePerSide.get(previous)); // center -> mid_{k-1}
             List<VertexId> leftReversed = secondHalfPerSide.get(previous); // mid_{k-1} -> corner_k
-            fillQuadGrid(builder, bottom, right, topReversed, leftReversed);
+            fillQuadGrid(builder, bottom, right, topReversed, leftReversed,Collections.EMPTY_SET);
         }
     }
 

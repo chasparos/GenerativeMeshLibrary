@@ -26,6 +26,7 @@ import com.jme3.scene.Mesh;
 import com.jme3.scene.Node;
 import com.jme3.scene.Spatial;
 import com.jme3.scene.VertexBuffer;
+import com.jme3.scene.debug.Grid;
 import com.jme3.scene.shape.Box;
 import com.jme3.system.AppSettings;
 import com.jme3.util.BufferUtils;
@@ -177,18 +178,34 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
         return light;
     }
 
-    /** y = 0 ground plane with a red-clay PBR material. */
+
     private void addGroundPlane() {
-        float halfSize = 20f;
-        float thickness = 0.05f;
-        Geometry plane = new Geometry("ground-plane", new Box(halfSize, thickness / 2f, halfSize));
-        plane.setLocalTranslation(0, -thickness / 2f, 0);
-        Material material = new Material(assetManager, "Common/MatDefs/Light/PBRLighting.j3md");
-        material.setColor("BaseColor", new ColorRGBA(0.55f, 0.20f, 0.12f, 1f));
-        material.setFloat("Roughness", 0.85f);
-        material.setFloat("Metallic", 0.0f);
+        int gridLines = 40; // Totalt antal linjer i rutnätet (t.ex. 40x40)
+        float spacing = 1.0f; // Avstånd mellan varje linje (1 unit)
+
+        // Skapa rutnätet (centrerat runt origo)
+        Grid gridMesh = new Grid(gridLines, gridLines, spacing);
+        Geometry plane = new Geometry("ground-grid", gridMesh);
+
+        // Centrera geometrin så att (0,0,0) hamnar precis i mitten av rutnätet
+        float halfSize = ((gridLines - 1) * spacing) / 2f;
+        plane.setLocalTranslation(-halfSize, 0, -halfSize);
+
+        // Använd Unshaded-material för ett rent och skarpt rutnät i en editor
+        Material material = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+
+        // Sätt färg och transparens (ColorRGBA: R, G, B, Alpha)
+        // 0.4f i sista parametern gör det 40% synligt (semitransparent)
+        material.setColor("Color", new ColorRGBA(0.55f, 0.20f, 0.12f, 0.4f));
+
+        // VIKTIGT: Aktivera transparens i materialet och renderingskön
+        material.getAdditionalRenderState().setBlendMode(RenderState.BlendMode.Alpha);
+        plane.setQueueBucket(RenderQueue.Bucket.Transparent);
+
+        // Ett rutnät ska oftast inte ta emot skuggor i en editor
+        plane.setShadowMode(RenderQueue.ShadowMode.Off);
+
         plane.setMaterial(material);
-        plane.setShadowMode(RenderQueue.ShadowMode.Receive);
         rootNode.attachChild(plane);
     }
 
