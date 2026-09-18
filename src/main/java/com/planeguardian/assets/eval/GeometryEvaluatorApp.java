@@ -5,7 +5,6 @@ import com.jme3.collision.CollisionResult;
 import com.jme3.collision.CollisionResults;
 import com.jme3.font.BitmapFont;
 import com.jme3.font.BitmapText;
-import com.jme3.input.ChaseCamera;
 import com.jme3.input.InputManager;
 import com.jme3.input.MouseInput;
 import com.jme3.input.controls.ActionListener;
@@ -65,15 +64,17 @@ import java.util.Map;
  * com.planeguardian.assets.generation.skeleton.GuideCurve} network, and
  * camera framing.
  */
-public final class GeometryEvaluatorApp extends SimpleApplication implements ActionListener {
+public final class GeometryEvaluatorApp extends SimpleApplication
+        implements ActionListener, com.planeguardian.assets.eval.states.ViewerHudAppState.HudProvider {
 
     private static final float CLICK_DRAG_THRESHOLD_PIXELS = 4f;
 
     private enum SelectMode { FACE, EDGE }
 
     private Node meshNode;
-    private Node cameraTargetNode;
-    private ChaseCamera chaseCam;
+    private com.planeguardian.assets.eval.states.OrbitCameraAppState orbitCamera;
+    private com.planeguardian.assets.eval.states.ViewerHudAppState hudState;
+    private com.planeguardian.assets.eval.states.CurveEditorAppState curveEditor;
 
     private Geometry solidGeometry;
     private Geometry edgeOverlayGeometry;
@@ -114,7 +115,6 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
     private EdgeId selectedEdge;
     private int selectedCurveIndex = -1;
 
-    private BitmapText hud;
     private Vector2f mouseDownPosition;
 
     public static void main(String[] args) {
@@ -138,22 +138,24 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
 
         meshNode = new Node("mesh-root");
         rootNode.attachChild(meshNode);
-        cameraTargetNode = new Node("camera-target");
-        rootNode.attachChild(cameraTargetNode);
 
         addThreePointLighting();
         addGroundPlane();
         loadGeometry(new TubeGeometry());
 
-        chaseCam = new ChaseCamera(cam, cameraTargetNode, inputManager);
-        chaseCam.setDragToRotate(true);
-        chaseCam.setDefaultVerticalRotation(FastMath.PI / 6f);
-        chaseCam.setMinDistance(0.1f);
-        chaseCam.setMaxDistance(500f);
-        chaseCam.setZoomSensitivity(2f);
+        // Camera, HUD, and the curve editor are each their own AppState now (see the states
+        // package); the main app keeps only genuinely global scene state (the current SUT, the
+        // mesh node and materials) and delegates camera framing, HUD text and editing to them.
+        orbitCamera = new com.planeguardian.assets.eval.states.OrbitCameraAppState();
+        hudState = new com.planeguardian.assets.eval.states.ViewerHudAppState();
+        curveEditor = new com.planeguardian.assets.eval.states.CurveEditorAppState(this);
+        stateManager.attach(orbitCamera);
+        stateManager.attach(hudState);
+        stateManager.attach(curveEditor);
+        hudState.addProvider(this);
+        hudState.addProvider(curveEditor);
 
         setUpInput();
-        setUpHud();
         frameAll();
     }
 
@@ -373,6 +375,7 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
         addMapping("ToggleCurveOverlay", new KeyTrigger(com.jme3.input.KeyInput.KEY_5));
         addMapping("SwitchSUT", new KeyTrigger(com.jme3.input.KeyInput.KEY_6));
         addMapping("ToggleFaceInspector", new KeyTrigger(com.jme3.input.KeyInput.KEY_7));
+        addMapping("ToggleCurveEditor", new KeyTrigger(com.jme3.input.KeyInput.KEY_E));
         addMapping("CopyToClipboard", new KeyTrigger(com.jme3.input.KeyInput.KEY_C));
         addMapping("ToggleSelectMode", new KeyTrigger(com.jme3.input.KeyInput.KEY_TAB));
         addMapping("FrameSelection", new KeyTrigger(com.jme3.input.KeyInput.KEY_F));
@@ -395,6 +398,7 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
             case "ToggleCurveOverlay" -> { if (isPressed) toggleCurveOverlay(); }
             case "SwitchSUT" -> { if (isPressed) switchSUT(); }
             case "ToggleFaceInspector" -> { if (isPressed) toggleFaceInspectorMode(); }
+            case "ToggleCurveEditor" -> { if (isPressed) toggleCurveEditor(); }
             case "CopyToClipboard" -> { if (isPressed) copyGeometryToClipboard(); }
             case "ToggleSelectMode" -> { if (isPressed) toggleSelectMode(); }
             case "FrameSelection" -> { if (isPressed) frameSelectionOrAll(); }
@@ -405,6 +409,11 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
     }
 
     private void onSelectButton(boolean isPressed) {
+        // While the curve editor owns the scene it handles its own mouse input; suppress the
+        // viewer's face/edge/curve picking so the two don't fight over the left mouse button.
+        if (curveEditor != null && curveEditor.isEnabled()) {
+            return;
+        }
         InputManager input = inputManager;
         if (isPressed) {
             mouseDownPosition = input.getCursorPosition().clone();
@@ -426,32 +435,27 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
     private void toggleWireframe() {
         wireframe = !wireframe;
         solidMaterial.getAdditionalRenderState().setWireframe(wireframe);
-        updateHud();
     }
 
     private void toggleEdgeOverlay() {
         edgeOverlayVisible = !edgeOverlayVisible;
         applyFaceInspectorVisibility();
-        updateHud();
     }
 
     private void toggleNormalOverlay() {
         normalOverlayVisible = !normalOverlayVisible;
         applyFaceInspectorVisibility();
-        updateHud();
     }
 
     /** Toggles the front/back (yellow/blue) orientation display mode, replacing the shaded solid mesh. */
     private void toggleFrontBackMode() {
         frontBackModeEnabled = !frontBackModeEnabled;
         applyFaceInspectorVisibility();
-        updateHud();
     }
 
     private void toggleCurveOverlay() {
         curveOverlayVisible = !curveOverlayVisible;
         applyFaceInspectorVisibility();
-        updateHud();
     }
 
     /**
@@ -468,7 +472,40 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
             updateHighlight();
         }
         applyFaceInspectorVisibility();
-        updateHud();
+    }
+
+    /**
+     * Toggles the interactive curve editor mode (key {@code [E]}). When enabled, the editor
+     * {@link com.planeguardian.assets.eval.states.CurveEditorAppState} takes over the scene with
+     * its own draggable pole/tangent handles and hides the viewer's generated mesh; disabling it
+     * restores the normal viewer. Editing is only meaningful for the Human Face SUT (the only one
+     * exposing an authored skeleton); for others the editor simply reports that it has nothing to
+     * edit.
+     */
+    private void toggleCurveEditor() {
+        if (curveEditor == null) return;
+        boolean enable = !curveEditor.isEnabled();
+        curveEditor.setEnabled(enable);
+        setViewerContentVisible(!enable);
+        // Lock the orbit camera while editing so it doesn't fight the editor for the mouse.
+        if (orbitCamera != null) orbitCamera.setEnabled(!enable);
+    }
+
+    /** Shows or hides the entire generated-mesh node (used while the curve editor owns the view). */
+    public void setViewerContentVisible(boolean visible) {
+        if (meshNode != null) {
+            meshNode.setCullHint(visible ? Spatial.CullHint.Dynamic : Spatial.CullHint.Always);
+        }
+    }
+
+    /** The generator currently loaded in the viewer (the editor reads its authored skeleton, if any). */
+    public SUTGeometryInterface currentGenerator() {
+        return currentGenerator;
+    }
+
+    /** The scene root the editor attaches its handles/preview to. */
+    public Node sceneRoot() {
+        return rootNode;
     }
 
     /** Re-derives every overlay's cull hint from the current toggle flags and inspector mode. */
@@ -537,12 +574,10 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
         SUTGeometryInterface next = currentGenerator instanceof FaceGeometry ? new TubeGeometry() : new FaceGeometry();
         loadGeometry(next);
         frameAll();
-        updateHud();
     }
 
     private void toggleSelectMode() {
         selectMode = selectMode == SelectMode.FACE ? SelectMode.EDGE : SelectMode.FACE;
-        updateHud();
     }
 
     // ---- Picking / selection -----------------------------------------------
@@ -558,7 +593,6 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
             selectedFace = null;
             selectedEdge = null;
             updateHighlight();
-            updateHud();
             return;
         }
         CollisionResult closest = results.getClosestCollision();
@@ -571,7 +605,6 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
             selectedEdge = nearestEdgeOfFace(faceId, closest.getContactPoint());
         }
         updateHighlight();
-        updateHud();
     }
 
     /**
@@ -603,7 +636,6 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
         selectedCurveIndex = bestIndex;
         updateSelectedCurveLabel();
         updateHighlight();
-        updateHud();
     }
 
     private static float distancePointToSegment2D(Vector2f point, Vector2f a, Vector2f b) {
@@ -779,6 +811,11 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
         frame(points);
     }
 
+    /** Frames a set of world-space points via the orbit camera state. */
+    public void frame(List<Vector3f> points) {
+        if (orbitCamera != null) orbitCamera.frame(points);
+    }
+
     private List<Vector3f> selectionPoints() {
         List<Vector3f> points = new ArrayList<>();
         if (selectedFace != null) {
@@ -795,41 +832,16 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
         return points;
     }
 
-    private void frame(List<Vector3f> points) {
-        if (points.isEmpty()) return;
-        Vector3f min = points.get(0).clone();
-        Vector3f max = points.get(0).clone();
-        for (Vector3f point : points) {
-            min.minLocal(point);
-            max.maxLocal(point);
-        }
-        Vector3f center = min.add(max).multLocal(0.5f);
-        float radius = Math.max(0.25f, center.distance(max));
-
-        cameraTargetNode.setLocalTranslation(center);
-        chaseCam.setDefaultDistance(radius * 3f);
-        chaseCam.setMinDistance(Math.max(0.05f, radius * 0.15f));
-        chaseCam.setMaxDistance(Math.max(200f, radius * 20f));
-        // ChaseCamera reads its distance lazily from the default the next update;
-        // nudge it immediately so framing feels instantaneous.
-        cam.setLocation(center.add(0, radius * 0.6f, radius * 3f));
-        cam.lookAt(center, Vector3f.UNIT_Y);
-    }
-
     // ---- HUD ----------------------------------------------------------
 
-    private void setUpHud() {
-        BitmapFont font = assetManager.loadFont("Interface/Fonts/Default.fnt");
-        hud = new BitmapText(font);
-        hud.setSize(font.getCharSet().getRenderedSize());
-        hud.setLocalTranslation(8, cam.getHeight() - 8, 0);
-        guiNode.attachChild(hud);
-        updateHud();
-    }
-
-    private void updateHud() {
-        if (hud == null) return;
-        hud.setText(String.join("\n", List.of(
+    /**
+     * The base viewer's HUD lines, contributed to the shared {@link
+     * com.planeguardian.assets.eval.states.ViewerHudAppState}. The curve editor contributes its
+     * own separate lines (see {@link com.planeguardian.assets.eval.states.CurveEditorAppState}).
+     */
+    @Override
+    public List<String> hudLines() {
+        return List.of(
                 "Generative Mesh Library - Geometry Evaluator",
                 "Drag mouse (L/R) to orbit, scroll to zoom",
                 "[1] Shaded/Wireframe: " + (wireframe ? "Wireframe" : "Shaded"),
@@ -840,6 +852,7 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
                 "[6] Switch SUT: " + (currentGenerator == null ? "-" : currentGenerator.displayName()),
                 "[7] Face inspector mode: " + (faceInspectorMode ? "On" : "Off")
                         + (faceInspectorMode ? " (click a curve to see its name)" : ""),
+                "[E] Curve editor mode: " + (curveEditor != null && curveEditor.isEnabled() ? "On" : "Off"),
                 "[C] Copy geometry (OBJ) to clipboard",
                 "[Tab] Select mode: " + selectMode,
                 "[Click] Select " + (selectMode == SelectMode.FACE ? "face" : "edge"),
@@ -847,6 +860,6 @@ public final class GeometryEvaluatorApp extends SimpleApplication implements Act
                 "Selected face: " + (selectedFace == null ? "-" : selectedFace),
                 "Selected edge: " + (selectedEdge == null ? "-" : selectedEdge),
                 "Selected curve: " + (selectedCurveIndex < 0 || selectedCurveIndex >= inspectorCurves.size()
-                        ? "-" : inspectorCurves.get(selectedCurveIndex).id()))));
+                        ? "-" : inspectorCurves.get(selectedCurveIndex).id()));
     }
 }

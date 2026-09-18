@@ -375,7 +375,15 @@ public final class TopologicalSkeleton {
 
             List<OutgoingEdge> outgoingAtDestination = rotations.get(current.toPoleId());
             int twinIndex = indexOfCurve(outgoingAtDestination, current.curveId());
-            OutgoingEdge next = outgoingAtDestination.get((twinIndex + 1) % outgoingAtDestination.size());
+            // Each pole's outgoing edges are sorted CCW as seen from OUTSIDE the cage (its local
+            // rotation axis is the outward centroid->pole direction, see #buildRotations). To trace
+            // faces with a consistent CCW (outward-facing) winding, at the destination pole we take
+            // the edge immediately BEFORE the incoming twin in that CCW order (i.e. the next edge in
+            // CW order). Taking the edge AFTER instead traces every face with the opposite (inward,
+            // back-face-culled-to-black) winding — the historical "witch-hat" winding bug — even
+            // though that orientation is still globally self-consistent. See
+            // TopologyGeneratorTest#everyGeneratedFaceNormalPointsOutward.
+            OutgoingEdge next = outgoingAtDestination.get((twinIndex - 1 + outgoingAtDestination.size()) % outgoingAtDestination.size());
             current = new DirectedEdge(next.curveId(), current.toPoleId(), next.toPoleId());
         } while (!current.equals(start));
         return new SubPatch(sides);

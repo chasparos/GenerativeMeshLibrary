@@ -52,6 +52,11 @@ public final class FaceGeometry implements SUTGeometryInterface {
         return new TopologyGenerator().generate(skeleton).mesh();
     }
 
+    /** The authored skeleton used to build this geometry, exposed so an editor can mutate a working copy of it. */
+    public TopologicalSkeleton skeleton() {
+        return HumanFaceSkeleton.build();
+    }
+
     /**
      * Samples every authored {@link GuideCurve} in the face skeleton into a polyline of
      * world-space points, mirroring each one across the symmetry plane when the skeleton is

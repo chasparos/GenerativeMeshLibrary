@@ -1,6 +1,7 @@
 package com.planeguardian.assets.generation.skeleton;
 
 import com.planeguardian.assets.generation.api.Vector3;
+import com.planeguardian.assets.generation.topology.ProtoFace;
 import com.planeguardian.assets.generation.topology.ProtoMeshSnapshot;
 import com.planeguardian.assets.generation.topology.VertexId;
 import org.junit.jupiter.api.Test;
@@ -130,6 +131,89 @@ class TopologyGeneratorTest {
 
         assertThrows(IllegalArgumentException.class,
                 () -> new TopologicalSkeleton(poles, List.of(curve), true, plane));
+    }
+
+    @Test
+    void everyGeneratedFaceNormalPointsOutward() {
+        // Regression guard for the winding-direction bug: a closed, star-convex cage (the unit
+        // cube) must generate every quad with a consistent CCW (outward-facing) winding, so its
+        // Newell normal points away from the mesh centroid at every face. An inward-facing
+        // (back-face-culled-to-black) winding — the historical bug — would flip all of these.
+        assertEveryFaceNormalPointsOutward(new TopologyGenerator().generate(unitCubeSkeleton(), 0).mesh());
+    }
+
+    @Test
+    void everyMirroredFaceNormalPointsOutward() {
+        // The mirror-and-weld path must also keep a consistent outward winding across both halves:
+        // the mirrored copies are reversed to compensate for reflection flipping orientation.
+        assertEveryFaceNormalPointsOutward(new TopologyGenerator().generate(mirroredCubeSkeleton(), 0).mesh());
+    }
+
+    private static void assertEveryFaceNormalPointsOutward(ProtoMeshSnapshot mesh) {
+        assertTrue(mesh.isValid(), () -> "issues: " + mesh.issues());
+        Vector3 centroid = meshCentroid(mesh);
+        for (ProtoFace face : mesh.faces().values()) {
+            List<Vector3> loop = new ArrayList<>();
+            for (var loopId : face.loops()) {
+                loop.add(mesh.vertices().get(mesh.loops().get(loopId).vertexId()).position());
+            }
+            Vector3 normal = newellNormal(loop);
+            Vector3 faceCentroid = averagePosition(loop);
+            Vector3 outward = new Vector3(
+                    faceCentroid.x() - centroid.x(), faceCentroid.y() - centroid.y(), faceCentroid.z() - centroid.z());
+            double dot = normal.x() * outward.x() + normal.y() * outward.y() + normal.z() * outward.z();
+            assertTrue(dot > 0, () -> "face " + face.id() + " normal points inward (dot=" + dot + ")");
+        }
+    }
+
+    private static Vector3 newellNormal(List<Vector3> loop) {
+        double nx = 0;
+        double ny = 0;
+        double nz = 0;
+        for (int i = 0; i < loop.size(); i++) {
+            Vector3 a = loop.get(i);
+            Vector3 b = loop.get((i + 1) % loop.size());
+            nx += (a.y() - b.y()) * (a.z() + b.z());
+            ny += (a.z() - b.z()) * (a.x() + b.x());
+            nz += (a.x() - b.x()) * (a.y() + b.y());
+        }
+        return new Vector3(nx, ny, nz);
+    }
+
+    private static Vector3 averagePosition(List<Vector3> points) {
+        double x = 0;
+        double y = 0;
+        double z = 0;
+        for (Vector3 p : points) {
+            x += p.x();
+            y += p.y();
+            z += p.z();
+        }
+        int n = Math.max(1, points.size());
+        return new Vector3(x / n, y / n, z / n);
+    }
+
+    private static Vector3 meshCentroid(ProtoMeshSnapshot mesh) {
+        return averagePosition(mesh.vertices().values().stream().map(v -> v.position()).toList());
+    }
+
+    private static TopologicalSkeleton mirroredCubeSkeleton() {
+        Plane symmetryPlane = new Plane(Vector3.ZERO, new Vector3(1, 0, 0));
+        double[][] seamCorners = {{0, -1, -1}, {0, 1, -1}, {0, 1, 1}, {0, -1, 1}};
+        double[][] interiorCorners = {{1, -1, -1}, {1, 1, -1}, {1, 1, 1}, {1, -1, 1}};
+        Map<String, Pole> poles = new LinkedHashMap<>();
+        for (int i = 0; i < 4; i++) {
+            poles.put("S" + i, new Pole("S" + i, new Vector3(seamCorners[i][0], seamCorners[i][1], seamCorners[i][2]), 4, true));
+            poles.put("I" + i, new Pole("I" + i, new Vector3(interiorCorners[i][0], interiorCorners[i][1], interiorCorners[i][2]), 3, false));
+        }
+        List<GuideCurve> curves = new ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            int next = (i + 1) % 4;
+            curves.add(new GuideCurve("seam" + i, "S" + i, "S" + next, List.of(), 1));
+            curves.add(new GuideCurve("far" + i, "I" + i, "I" + next, List.of(), 1));
+            curves.add(new GuideCurve("connect" + i, "S" + i, "I" + i, List.of(), 1));
+        }
+        return new TopologicalSkeleton(poles, curves, true, symmetryPlane);
     }
 
     private static TopologicalSkeleton unitCubeSkeleton() {
