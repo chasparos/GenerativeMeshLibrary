@@ -487,8 +487,10 @@ public final class GeometryEvaluatorApp extends SimpleApplication
         boolean enable = !curveEditor.isEnabled();
         curveEditor.setEnabled(enable);
         setViewerContentVisible(!enable);
-        // Lock the orbit camera while editing so it doesn't fight the editor for the mouse.
-        if (orbitCamera != null) orbitCamera.setEnabled(!enable);
+        // Keep the orbit camera fully enabled while editing (scroll to zoom, drag to orbit still
+        // work) but restrict orbiting to the right mouse button only, so a left-click-drag on a
+        // handle never fights the camera for the mouse.
+        if (orbitCamera != null) orbitCamera.setLeftClickRotateAllowed(!enable);
     }
 
     /** Shows or hides the entire generated-mesh node (used while the curve editor owns the view). */

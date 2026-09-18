@@ -4,6 +4,9 @@ import com.jme3.app.Application;
 import com.jme3.app.SimpleApplication;
 import com.jme3.app.state.BaseAppState;
 import com.jme3.input.ChaseCamera;
+import com.jme3.input.MouseInput;
+import com.jme3.input.controls.MouseButtonTrigger;
+import com.jme3.input.controls.Trigger;
 import com.jme3.math.FastMath;
 import com.jme3.math.Vector3f;
 import com.jme3.scene.Node;
@@ -20,9 +23,21 @@ import java.util.List;
  */
 public final class OrbitCameraAppState extends BaseAppState {
 
+    /** Default: either mouse button drags to orbit (matches {@link ChaseCamera}'s own default). */
+    private static final Trigger[] BOTH_BUTTONS_ROTATE = {
+            new MouseButtonTrigger(MouseInput.BUTTON_LEFT),
+            new MouseButtonTrigger(MouseInput.BUTTON_RIGHT)
+    };
+
+    /** Restricted: only the right mouse button orbits, freeing the left button for other tools. */
+    private static final Trigger[] RIGHT_BUTTON_ONLY_ROTATE = {
+            new MouseButtonTrigger(MouseInput.BUTTON_RIGHT)
+    };
+
     private final Node cameraTarget = new Node("camera-target");
     private ChaseCamera chaseCam;
     private List<Vector3f> pendingFrame;
+    private Boolean pendingLeftClickRotateAllowed;
 
     @Override
     protected void initialize(Application app) {
@@ -43,6 +58,11 @@ public final class OrbitCameraAppState extends BaseAppState {
             pendingFrame = null;
             frame(points);
         }
+        if (pendingLeftClickRotateAllowed != null) {
+            boolean allowed = pendingLeftClickRotateAllowed;
+            pendingLeftClickRotateAllowed = null;
+            setLeftClickRotateAllowed(allowed);
+        }
     }
 
     @Override
@@ -58,6 +78,22 @@ public final class OrbitCameraAppState extends BaseAppState {
     @Override
     protected void onDisable() {
         if (chaseCam != null) chaseCam.setEnabled(false);
+    }
+
+    /**
+     * Restricts orbiting to the right mouse button only (freeing the left button for another
+     * tool, such as the curve editor's handle dragging) when {@code allowed} is {@code false};
+     * restores the default both-buttons-orbit behaviour when {@code true}. The camera itself
+     * stays fully enabled either way — only the mouse button(s) that trigger rotation change, so
+     * scrolling to zoom and right-drag orbiting always keep working.
+     */
+    public void setLeftClickRotateAllowed(boolean allowed) {
+        if (chaseCam == null) {
+            // Not yet initialized (see #initialize) — remember and replay once it is.
+            pendingLeftClickRotateAllowed = allowed;
+            return;
+        }
+        chaseCam.setToggleRotationTrigger(allowed ? BOTH_BUTTONS_ROTATE : RIGHT_BUTTON_ONLY_ROTATE);
     }
 
     /** Fits {@code points} (world space) into view, centring and pulling the camera back to frame them. */

@@ -47,6 +47,12 @@ import java.util.Set;
  * driving all mutations through the plain-Java, unit-tested
  * {@link SkeletonEditOperations} helper (so this class stays a thin JME3 input/rendering shell).
  *
+ * <p>By default only the curve/handle overlay is shown — no solid mesh is generated on every
+ * edit, since regenerating and re-triangulating the full topology after each drag is far too slow
+ * for interactive editing. The solid preview is opt-in via {@code [R]} and, once shown, is
+ * dropped again on the next edit (kept in sync rather than silently going stale) until the user
+ * explicitly regenerates it again.</p>
+ *
  * <h2>Handles &amp; gestures</h2>
  * <ul>
  *   <li><b>Endpoint handles</b> (one sphere per pole with at least one curve): left-drag to move
@@ -60,11 +66,18 @@ import java.util.Set;
  *   <li><b>[X] delete</b> the selected curve.</li>
  *   <li><b>[N] new curve</b> from the selected pole: then click a second pole to connect them.</li>
  *   <li><b>[D] reattach</b> the selected curve's end: then click the pole to reattach it to.</li>
- *   <li><b>[R] regenerate</b> the solid preview from the current working skeleton.</li>
+ *   <li><b>[R] show/refresh</b> the opt-in solid preview from the current working skeleton.</li>
+ *   <li><b>[L] preview level of detail</b>: cycles the solid preview between two densities
+ *       (see {@link #PREVIEW_LOD_DELTA_T}), regenerating immediately if it is currently shown.</li>
  * </ul>
  *
- * <p>After every edit the working skeleton is re-validated by attempting to build a generation
- * skeleton; any {@code TopologyParityException}/{@code IllegalArgumentException}/
+ * <p>The orbit camera is never locked while editing: it stays fully responsive to scrolling to
+ * zoom and (right-button-only, while the editor is active) dragging to orbit, so the left mouse
+ * button is free for handle/curve interaction. See
+ * {@link OrbitCameraAppState#setLeftClickRotateAllowed(boolean)}.</p>
+ *
+ * <p>Whenever the solid preview is (re)built, the working skeleton is validated by attempting to
+ * build a generation skeleton; any {@code TopologyParityException}/{@code IllegalArgumentException}/
  * {@code TopologyGenerationException} is caught and surfaced in the HUD rather than crashing.</p>
  */
 public final class CurveEditorAppState extends BaseAppState
@@ -74,6 +87,17 @@ public final class CurveEditorAppState extends BaseAppState
     private static final float HANDLE_RADIUS = 0.02f;
     private static final float TANGENT_RADIUS = 0.013f;
     private static final float CURVE_PICK_RADIUS_PIXELS = 12f;
+
+    /**
+     * The two selectable solid-preview levels of detail, expressed as {@code deltaT}: the target
+     * fraction of a curve's length spanned by each generated boundary segment (matching the
+     * {@code HumanFaceSkeleton} authoring convention of {@code deltaT <= 0.1}). A curve's
+     * {@code densitySegmentCount} for the preview is {@code round(1 / deltaT)}: 10 segments at
+     * the fine 0.1 level, 4 at the coarse (much faster to regenerate) 0.25 level. This only
+     * affects the opt-in preview mesh built by {@link #regeneratePreview()}; it never overwrites
+     * the density actually authored on each {@link GuideCurve}.
+     */
+    private static final double[] PREVIEW_LOD_DELTA_T = {0.25, 0.1};
 
     private enum Pending { NONE, CREATE_CURVE, REATTACH_END }
 
@@ -93,6 +117,7 @@ public final class CurveEditorAppState extends BaseAppState
 
     private String selectedPoleId;
     private String selectedCurveId;
+    private int previewLodIndex = 0;
 
     private Pending pending = Pending.NONE;
     private DragKind dragKind = DragKind.NONE;
@@ -147,7 +172,9 @@ public final class CurveEditorAppState extends BaseAppState
         previewMaterial.setFloat("Metallic", 0.05f);
 
         registerInput();
-        rebuildVisuals(true);
+        // Curves-only by default: the full solid preview mesh is expensive to regenerate on
+        // every edit, so it is opt-in via [R] rather than rebuilt automatically here.
+        rebuildVisuals(false);
     }
 
     @Override
@@ -173,6 +200,7 @@ public final class CurveEditorAppState extends BaseAppState
         addMapping(input, "EditorNewCurve", new KeyTrigger(KeyInput.KEY_N));
         addMapping(input, "EditorReattach", new KeyTrigger(KeyInput.KEY_D));
         addMapping(input, "EditorRegen", new KeyTrigger(KeyInput.KEY_R));
+        addMapping(input, "EditorToggleLod", new KeyTrigger(KeyInput.KEY_L));
     }
 
     private void addMapping(InputManager input, String name, com.jme3.input.controls.Trigger trigger) {
@@ -185,7 +213,7 @@ public final class CurveEditorAppState extends BaseAppState
     private void unregisterInput() {
         InputManager input = app.getInputManager();
         input.removeListener(this);
-        for (String name : List.of("EditorClick", "EditorSplit", "EditorDelete", "EditorNewCurve", "EditorReattach", "EditorRegen")) {
+        for (String name : List.of("EditorClick", "EditorSplit", "EditorDelete", "EditorNewCurve", "EditorReattach", "EditorRegen", "EditorToggleLod")) {
             if (input.hasMapping(name)) input.deleteMapping(name);
         }
     }
@@ -200,6 +228,7 @@ public final class CurveEditorAppState extends BaseAppState
             case "EditorNewCurve" -> { if (isPressed) beginCreateCurve(); }
             case "EditorReattach" -> { if (isPressed) beginReattach(); }
             case "EditorRegen" -> { if (isPressed) rebuildVisuals(true); }
+            case "EditorToggleLod" -> { if (isPressed) toggleLevelOfDetail(); }
             default -> { }
         }
     }
@@ -216,12 +245,13 @@ public final class CurveEditorAppState extends BaseAppState
                 selectCurveAt(cursor);
             }
         } else {
-            // Mouse released: commit any active drag by regenerating the solid preview.
+            // Mouse released: end the drag. The curve/handle overlay already tracked the drag
+            // live; the (opt-in) solid preview mesh is only rebuilt on an explicit [R].
             if (dragKind != DragKind.NONE) {
                 dragKind = DragKind.NONE;
                 dragPoleId = null;
                 dragTangentCurveId = null;
-                rebuildVisuals(true);
+                rebuildVisuals(false);
             }
         }
     }
@@ -235,7 +265,7 @@ public final class CurveEditorAppState extends BaseAppState
                 }
                 pending = Pending.NONE;
                 selectedPoleId = poleId;
-                rebuildVisuals(true);
+                rebuildVisuals(false);
             }
             case REATTACH_END -> {
                 if (selectedCurveId != null) {
@@ -244,7 +274,7 @@ public final class CurveEditorAppState extends BaseAppState
                             "Reattached " + curveId + " end -> " + poleId);
                 }
                 pending = Pending.NONE;
-                rebuildVisuals(true);
+                rebuildVisuals(false);
             }
             default -> {
                 selectedPoleId = poleId;
@@ -339,7 +369,7 @@ public final class CurveEditorAppState extends BaseAppState
             selectedPoleId = newPole[0];
             selectedCurveId = null;
         }
-        rebuildVisuals(true);
+        rebuildVisuals(false);
     }
 
     private void deleteSelectedCurve() {
@@ -350,7 +380,7 @@ public final class CurveEditorAppState extends BaseAppState
         String curveId = selectedCurveId;
         tryEdit(() -> working.deleteCurve(curveId), "Deleted curve " + curveId);
         selectedCurveId = null;
-        rebuildVisuals(true);
+        rebuildVisuals(false);
     }
 
     private void beginCreateCurve() {
@@ -496,6 +526,12 @@ public final class CurveEditorAppState extends BaseAppState
 
         if (regeneratePreview) {
             regeneratePreview();
+        } else if (previewGeometry != null) {
+            // The overlay only ever shows curves/handles by default (the solid mesh is opt-in
+            // and expensive to keep in sync); drop the now-stale preview from a prior [R] rather
+            // than let it silently diverge from the curves being edited.
+            previewGeometry.removeFromParent();
+            previewGeometry = null;
         }
     }
 
@@ -542,7 +578,7 @@ public final class CurveEditorAppState extends BaseAppState
             previewGeometry = null;
         }
         try {
-            TopologicalSkeleton skeleton = working.toGenerationSkeleton();
+            TopologicalSkeleton skeleton = applyPreviewLod(working.toGenerationSkeleton());
             ProtoMeshSnapshot mesh = new TopologyGenerator().generate(skeleton).mesh();
             if (!mesh.isValid()) {
                 status = "Preview invalid: " + mesh.issues();
@@ -554,8 +590,38 @@ public final class CurveEditorAppState extends BaseAppState
             previewGeometry.setMaterial(previewMaterial);
             previewGeometry.setShadowMode(RenderQueue.ShadowMode.Off);
             editorNode.attachChild(previewGeometry);
+            status = "Preview regenerated at LOD " + PREVIEW_LOD_DELTA_T[previewLodIndex];
         } catch (RuntimeException ex) {
             status = "Preview unavailable: " + ex.getMessage();
+        }
+    }
+
+    /**
+     * Returns a copy of {@code skeleton} with every curve's {@code densitySegmentCount}
+     * overridden to a single uniform value derived from the current preview LOD (see
+     * {@link #PREVIEW_LOD_DELTA_T}), regardless of each curve's individually authored density.
+     * Because every curve gets the same value, any two opposite sides of a four-sided patch stay
+     * equal (a {@link TopologyGenerator} requirement) automatically, and the usual odd-sum parity
+     * repair still runs normally on top of this. This never mutates the editor's own working
+     * skeleton — only the transient mesh built for the on-screen preview.
+     */
+    private TopologicalSkeleton applyPreviewLod(TopologicalSkeleton skeleton) {
+        int segments = Math.max(1, (int) Math.round(1.0 / PREVIEW_LOD_DELTA_T[previewLodIndex]));
+        List<GuideCurve> scaled = new ArrayList<>(skeleton.curves().size());
+        for (GuideCurve curve : skeleton.curves()) {
+            scaled.add(curve.withDensitySegmentCount(segments));
+        }
+        return new TopologicalSkeleton(skeleton.poles(), scaled, skeleton.isMirrored(), skeleton.symmetryPlane(),
+                skeleton.holeCurveIds(), skeleton.ringInsetCurveIds());
+    }
+
+    /** Cycles the solid preview's level of detail (key [L]) and regenerates it if currently shown. */
+    private void toggleLevelOfDetail() {
+        previewLodIndex = (previewLodIndex + 1) % PREVIEW_LOD_DELTA_T.length;
+        if (previewGeometry != null) {
+            regeneratePreview();
+        } else {
+            status = "Preview LOD set to " + PREVIEW_LOD_DELTA_T[previewLodIndex] + " (press [R] to preview)";
         }
     }
 
@@ -586,12 +652,13 @@ public final class CurveEditorAppState extends BaseAppState
             return List.of("-- Curve Editor --", status);
         }
         return List.of(
-                "-- Curve Editor (drag handles; camera locked) --",
+                "-- Curve Editor (drag handles; right-drag/scroll still orbit camera) --",
                 "Left-drag pole handle: move pole (on-plane poles slide in x=0)",
                 "Left-drag pink handle: shape curve tangent",
                 "[S] split selected curve   [X] delete selected curve",
                 "[N] new curve from selected pole   [D] reattach selected curve end",
-                "[R] regenerate preview   [E] exit editor",
+                "[R] show/refresh solid preview (curves-only otherwise)   [L] preview LOD: "
+                        + PREVIEW_LOD_DELTA_T[previewLodIndex] + "   [E] exit editor",
                 "Selected pole: " + (selectedPoleId == null ? "-" : selectedPoleId)
                         + "   Selected curve: " + (selectedCurveId == null ? "-" : selectedCurveId),
                 "Lit (single-curve, excluded) poles: " + working.singleCurvePoleIds().size()
